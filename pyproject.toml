@@ -1,0 +1,69 @@
+[build-system]
+requires = [
+        "hatchling==1.33.0",
+        "packaging==26.3",
+        "pathspec==1.1.1",
+        "pluggy==1.7.0",
+        "tomlkit==0.15.2",
+        "trove-classifiers==2026.9.21.13",
+]
+build-backend = "hatchling.build"
+
+[project]
+# GitHub Release distribution; PyPI registration is not required.
+name = "specfactory"
+version = "0.1.0"
+description = "Guided installer for the interactive Software Factory (Spec Kit and VS Code Copilot Chat)."
+requires-python = ">=3.11"
+dependencies = []
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+
+[project.scripts]
+specfactory = "specfactory.cli:main"
+
+# Explicit allowlist: only these files are built into the wheel and sdist.
+[tool.hatch.build.targets.wheel]
+sources = ["src"]
+only-include = [
+    "src/specfactory/__init__.py",
+    "src/specfactory/__main__.py",
+    "src/specfactory/bundle.py",
+    "src/specfactory/cli.py",
+    "src/specfactory/assets/BUNDLE_VERSION",
+    "src/specfactory/assets/.github/agents/factory-lead.agent.md",
+    "src/specfactory/assets/.github/agents/architect.agent.md",
+    "src/specfactory/assets/.github/agents/engineer.agent.md",
+    "src/specfactory/assets/.github/agents/qa-engineer.agent.md",
+    "src/specfactory/assets/.github/agents/code-reviewer.agent.md",
+    "src/specfactory/assets/.github/skills/factory-handoff/SKILL.md",
+    "src/specfactory/assets/scripts/install_factory.py",
+    "src/specfactory/assets/scripts/check_factory_readiness.py",
+    "src/specfactory/assets/scripts/validate_specialist_profiles.py",
+    "src/specfactory/assets/scripts/specialist_models.py",
+]
+
+[tool.hatch.build.targets.sdist]
+ignore-vcs = true
+only-include = [
+    "pyproject.toml",
+    "README.md",
+    "build-constraints.txt",
+    "LICENSE",
+    "src/specfactory/__init__.py",
+    "src/specfactory/__main__.py",
+    "src/specfactory/bundle.py",
+    "src/specfactory/cli.py",
+    "src/specfactory/assets/BUNDLE_VERSION",
+    "src/specfactory/assets/.github/agents/factory-lead.agent.md",
+    "src/specfactory/assets/.github/agents/architect.agent.md",
+    "src/specfactory/assets/.github/agents/engineer.agent.md",
+    "src/specfactory/assets/.github/agents/qa-engineer.agent.md",
+    "src/specfactory/assets/.github/agents/code-reviewer.agent.md",
+    "src/specfactory/assets/.github/skills/factory-handoff/SKILL.md",
+    "src/specfactory/assets/scripts/install_factory.py",
+    "src/specfactory/assets/scripts/check_factory_readiness.py",
+    "src/specfactory/assets/scripts/validate_specialist_profiles.py",
+    "src/specfactory/assets/scripts/specialist_models.py",
+]
