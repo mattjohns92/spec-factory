@@ -1,31 +1,40 @@
 # Spec Factory
 
-Software Factory installs a small, interactive team of VS Code Copilot Chat agent profiles and supporting scripts into an existing Spec Kit project. Factory Lead coordinates specialist tasks; the package does not run an autonomous coding agent or make model selections for you.
+## Quick Start
 
-## Requirements
+Spec Factory adds a small team of VS Code Copilot Chat agents, led by Factory Lead, and supporting scripts to an existing Spec Kit project. Its guided installer checks the project, shows the planned changes, and asks before installing; it does not run an autonomous coding agent or replace Spec Kit.
 
-- Python 3.11 or newer and Git.
-- An existing Git project with a valid Spec Kit Copilot integration.
-- VS Code with GitHub Copilot Chat for the primary workflow.
-- `uv` to download and run the versioned wheel.
+### Before You Start
 
-The Copilot CLI is optional for readiness in an installed project. A valid Spec Kit integration is required. This tool does not initialize or repair Spec Kit projects.
+- Python 3.11 or newer, [`uv`](https://docs.astral.sh/uv/getting-started/installation/), and [Git](https://git-scm.com/downloads).
+- An existing project that is the root of a Git repository, with Spec Kit already initialized and its Copilot integration working. The `specify` command is used for readiness checks; if it is missing, the installer can offer to install `specify-cli==1.0.6` with `uv` after asking permission.
+- [VS Code with GitHub Copilot Chat](https://code.visualstudio.com/docs/copilot/chat/copilot-chat), with access to Copilot, to use the installed agents.
 
-## Install
+The installer does not initialize or repair Spec Kit. If the project is not ready, set up or repair Spec Kit yourself, then run the installer again.
 
-From the root of your existing project, run the versioned GitHub Release wheel with `uvx`:
+### Install
+
+Open a terminal at the root of your existing Spec Kit project, then run the published `v0.1.0` wheel directly from GitHub Releases:
 
 ```powershell
 uvx --from "https://github.com/mattjohns92/spec-factory/releases/download/v0.1.0/specfactory-0.1.0-py3-none-any.whl" specfactory init
 ```
 
-This command downloads the published `v0.1.0` wheel directly from its GitHub Release; it does not use PyPI. Review the complete plan and approve each write action separately. Declining leaves the project unchanged. To inspect the plan without writing:
+The installer checks prerequisites and previews its plan. It asks separately before installing the Specify CLI (if needed) and before writing the Spec Factory files. It creates managed files only when they are absent, never overwrites existing files, writes an install manifest, and adds a local Git exclude entry for optional model preferences. Declining an action leaves that action unapplied.
+
+To preview without setup commands, prompts, or project writes:
 
 ```powershell
 uvx --from "https://github.com/mattjohns92/spec-factory/releases/download/v0.1.0/specfactory-0.1.0-py3-none-any.whl" specfactory init --dry-run
 ```
 
-The command is `specfactory`; no PyPI registration is required for this GitHub Release installation.
+This command downloads the published wheel from GitHub Releases; it does not use PyPI.
+
+### Choose Factory Lead
+
+After installation, open the project folder in VS Code, open Copilot Chat, open the agent picker, and select **Factory Lead**. Factory Lead coordinates work with the installed specialist agents and pauses for your approval of specification and plan steps.
+
+The installer does not sign in to Copilot or select model IDs for you. Model preferences are optional; you can choose and confirm them during installation or leave them unset. Readiness checks do not verify Copilot authentication, live task dispatch, or sandbox enforcement.
 
 ## Development
 
@@ -43,13 +52,8 @@ See [RELEASING.md](RELEASING.md) for the root-level build and release checks.
 
 MIT. See [LICENSE](LICENSE).
 
-## After Installation
-
-Open the project in VS Code, open Copilot Chat, and select **Factory Lead**. Model preferences are optional and are only written after explicit selection and confirmation. The package supplies no personal model identifiers. Readiness reports project checks and limitations; it does not verify authentication, live task dispatch, or sandbox enforcement.
-
 ## Limitations
 
 - Spec Kit must already be initialized and its Copilot integration must be valid; the installer does not run `specify init` or use `--force`.
 - Managed-file upgrades, customization, and uninstall automation are not provided. Review the install manifest and `git status` before committing project changes.
-- Readiness reports project checks and limitations; it does not verify authentication, live task dispatch, or sandbox enforcement.
 - Each release must include the approved license and a wheel whose version matches the release URL.
