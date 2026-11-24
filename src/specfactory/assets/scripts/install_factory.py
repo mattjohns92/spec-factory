@@ -380,7 +380,7 @@ def _is_factory_source_checkout(path):
     root = Path(path)
     return (
         (root / "pyproject.toml").is_file()
-        and (root / "src" / "software_factory").is_dir()
+        and (root / "src" / "specfactory").is_dir()
         and (root / "scripts" / "install_factory.py").is_file()
     )
 
