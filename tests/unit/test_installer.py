@@ -188,6 +188,69 @@ class InstallerTestCase(unittest.TestCase):
         return output
 
 
+class WorkspaceInstallTests(InstallerTestCase):
+    def make_workspace(self):
+        workspace = self.base / "workspace"
+        workspace.mkdir()
+        for relative in readiness.SPECKIT_FILES:
+            path = workspace / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("content\n", encoding="utf-8")
+        for relative in ("services/api", "clients/web"):
+            path = workspace / relative
+            path.mkdir(parents=True)
+            self.git("init", "-q", str(path))
+            (path / "tracked.txt").write_text("committed\n", encoding="utf-8")
+            self.git("add", "tracked.txt", cwd=path)
+            self.git(
+                "-c", "user.name=tester", "-c", "user.email=tester@example.invalid",
+                "commit", "-q", "-m", "initial", cwd=path,
+            )
+        return workspace
+
+    def test_workspace_installs_once_without_changing_child_repositories(self):
+        workspace = self.make_workspace()
+        children = [workspace / "clients/web", workspace / "services/api"]
+        before = {path: self.tree_hash(path) for path in children}
+
+        code, output = self.run_install(workspace, "--workspace")
+
+        self.assertEqual(code, 0, output)
+        self.assertFalse((workspace / ".git").exists())
+        self.assertTrue((workspace / readiness.WORKSPACE_MANIFEST_PATH).is_file())
+        self.assertFalse((workspace / PREFERENCES).exists())
+        self.assertEqual({path: self.tree_hash(path) for path in children}, before)
+        self.assertEqual(self.readiness.calls, [str(workspace)])
+        self.assertIn("Gitless workspace root", output)
+        self.assertNotIn("[appended]", output)
+
+    def test_workspace_dry_run_changes_nothing(self):
+        workspace = self.make_workspace()
+        before = self.tree_hash(workspace)
+
+        code, output = self.run_install(workspace, "--workspace", "--dry-run")
+
+        self.assertEqual(code, 0, output)
+        self.assertEqual(self.tree_hash(workspace), before)
+        self.assertEqual(self.readiness.calls, [])
+        self.assertIn("DRY RUN: nothing was changed.", output)
+
+    def test_workspace_collision_writes_nothing(self):
+        workspace = self.make_workspace()
+        conflict = workspace / EXPECTED_MANAGED[0]
+        conflict.parent.mkdir(parents=True, exist_ok=True)
+        conflict.write_text("owner content\n", encoding="utf-8")
+        before = self.tree_hash(workspace)
+
+        code, output = self.run_install(workspace, "--workspace")
+
+        self.assertEqual(code, 1, output)
+        self.assertEqual(self.tree_hash(workspace), before)
+        self.assertEqual(self.readiness.calls, [])
+        self.assertIn("[conflict]", output)
+        self.assertIn("Nothing was written.", output)
+
+
 class TargetValidationTests(InstallerTestCase):
     def test_nonexistent_directory_is_refused(self):
         missing = self.base / "missing"

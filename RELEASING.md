@@ -26,7 +26,7 @@ Run the full product and distribution suite before release:
 python -m unittest discover -s tests -t .
 ```
 
-Inspect both archives against the tests' explicit file allowlists, record their SHA-256 hashes and build environment, and verify that the sdist can rebuild the same wheel without the checkout. Do not include tests, development-only files, local paths, personal configuration, or the internal release notes in either artifact.
+Inspect both archives against the tests' explicit file allowlists, record their SHA-256 hashes and build environment, and verify that the sdist can rebuild the same wheel without the checkout. Hatchling always includes `.gitignore` and generated `PKG-INFO` in an sdist; the former is listed explicitly and the latter is backend metadata. Do not include tests, other development-only files, local paths, personal configuration, or the internal release notes in either artifact.
 
 ## Publishing
 

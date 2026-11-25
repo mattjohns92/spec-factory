@@ -70,8 +70,10 @@ class _Inspection:
 
 class _Onboarding:
     def __init__(self, target, *, stdout, input_fn, interactive, environment, which,
-                 query, setup, script):
+                 query, setup, script, workspace=False):
         self.target = target
+        self.workspace = workspace
+        self.workspace_repositories = []
         self.stdout = stdout
         self.input_fn = input_fn
         self.interactive = interactive
@@ -146,6 +148,14 @@ class _Onboarding:
             self.emit("  Spec Kit + Copilot integration: not checked (Specify CLI unavailable)")
         else:
             self.emit("  Spec Kit + Copilot integration: not checked (Specify CLI unusable)")
+        if self.workspace:
+            self.emit("  Child repositories:")
+            for repository in self.workspace_repositories:
+                state = "clean" if repository["clean"] else f"dirty ({repository['dirty_paths']} path(s))"
+                head = repository["head"] or "no commits"
+                self.emit(
+                    f"    {repository['path']} (branch {repository['branch']}; HEAD {head}; {state})"
+                )
 
     def blocker(self, found):
         """Return text explaining why no approved action can fix the current state, else None."""
@@ -162,6 +172,14 @@ class _Onboarding:
                 f"({UV_INSTALL_URL}) or install the Specify CLI yourself, then re-run."
             )
         if found.speckit_result is not None and not found.spec_kit_ok:
+            if self.workspace:
+                return (
+                    "the workspace root has no valid Spec Kit Copilot integration "
+                    f"({found.speckit_result.finding}). Initialize Spec Kit interactively at the "
+                    "workspace root with `specify init --here --integration copilot`, review its "
+                    "merge prompt, then re-run; Spec Factory never uses --force or initializes "
+                    "child repositories."
+                )
             return (
                 "Spec Kit is absent, incomplete or lacks a valid Copilot integration "
                 f"({found.speckit_result.finding}). Automatic initialization is unavailable "
@@ -193,9 +211,15 @@ class _Onboarding:
         self.emit("Software Factory plan: the per-path plan is shown after the prerequisites pass.")
         self.emit("  It will create these files if absent and never overwrite an existing file:")
         readiness = self.readiness
-        for path in (*readiness.MANAGED_FILES, readiness.MANIFEST_PATH):
+        paths = (*readiness.MANAGED_FILES, readiness.MANIFEST_PATH)
+        if self.workspace:
+            paths += (readiness.WORKSPACE_MANIFEST_PATH,)
+        for path in paths:
             self.emit(f"    {path}")
-        self.emit(f"  and append '/{readiness.PREFERENCES_PATH}' to the project's .git/info/exclude.")
+        if self.workspace:
+            self.emit("  Child repositories are inspected only; no child files or Git metadata are changed.")
+        else:
+            self.emit(f"  and append '/{readiness.PREFERENCES_PATH}' to the project's .git/info/exclude.")
         return None
 
     def preview_engine(self):
@@ -216,6 +240,11 @@ class _Onboarding:
                 "Kit setup is needed, review Specify's existing-project guidance and initialize "
                 "manually; onboarding will not run a command that requires `--force`."
             )
+        if self.workspace:
+            return (
+                "Install the Software Factory files once at this Gitless workspace root, create a "
+                "workspace repository index, leave child repositories unchanged, then run readiness."
+            )
         return (
             "Install the Software Factory files with the bundled installer: creates the managed "
             "files and a manifest that do not yet exist, appends one line to .git/info/exclude, "
@@ -227,6 +256,8 @@ class _Onboarding:
     def engine_arguments(self, dry_run):
         engine = bundle.asset_root() / "scripts" / "install_factory.py"
         arguments = [sys.executable, "-B", str(engine), "--target", self.target]
+        if self.workspace:
+            arguments.append("--workspace")
         if dry_run:
             arguments.append("--dry-run")
         return arguments
@@ -318,8 +349,13 @@ class _Onboarding:
             self.emit(f"  Readiness verdict: {verdict or 'not reported'}")
             if limitations:
                 self.emit(f"  Limitations: {limitations}")
-            self.emit("  Installed files are uncommitted; review them with `git status`.")
-            self.model_guidance()
+            if self.workspace:
+                self.emit("  The Gitless workspace root remains Gitless; child repositories were not modified.")
+                self.emit("  Review current service state with `python scripts/check_factory_readiness.py`.")
+                self.emit("  Model preferences are not prompted for in workspace mode.")
+            else:
+                self.emit("  Installed files are uncommitted; review them with `git status`.")
+                self.model_guidance()
             self.vscode_guidance()
         return code
 
@@ -405,7 +441,8 @@ class _Onboarding:
 
     def vscode_guidance(self):
         self.emit("Next steps in VS Code:")
-        self.emit(f"  1. Open this project folder in VS Code (`code \"{self.target}\"`).")
+        label = "workspace root" if self.workspace else "project folder"
+        self.emit(f"  1. Open this {label} in VS Code (`code \"{self.target}\"`).")
         self.emit("  2. Open Copilot Chat, open the agent picker and select 'Factory Lead'.")
         self.emit("  3. Ask it to work on a feature; it stops for your approval of each specification and plan.")
         self.emit("  Not verified: that Chat lists Factory Lead and its delegation work in your project; no Copilot session was run.")
@@ -423,6 +460,10 @@ def _build_parser():
         description="Inspect the project, show every planned change, then install after separate approvals.",
     )
     init.add_argument("--target", help="project root (default: current directory)")
+    init.add_argument(
+        "--workspace", action="store_true",
+        help="install once at a Gitless workspace root containing multiple child Git repositories",
+    )
     init.add_argument("--dry-run", action="store_true", help="read-only preview; no prompts, setup or writes")
     init.add_argument(
         "--non-interactive", action="store_true",
@@ -485,9 +526,10 @@ def main(
         target, stdout=stdout, input_fn=input_fn or input, interactive=interactive,
         environment=environment, which=which, query=query,
         setup=setup_runner or _default_setup, script=script_runner or _default_script,
+        workspace=arguments.workspace,
     )
 
-    root_problem = _root_problem(onboarding, target)
+    root_problem = _root_problem(onboarding, target, workspace=arguments.workspace)
     if root_problem:
         emit(f"Refused: {root_problem} No project changes were made.")
         return EXIT_REFUSED
@@ -542,9 +584,17 @@ def main(
     return onboarding.install()
 
 
-def _root_problem(onboarding, target):
+def _root_problem(onboarding, target, *, workspace=False):
     if onboarding.which("git") is None:
         return "git was not found on PATH."
+    if workspace:
+        repositories, error = bundle.load_script("check_factory_readiness").discover_workspace_repositories(
+            target, onboarding.query
+        )
+        if error:
+            return f"workspace mode requires a Gitless root and at least two independent child Git repositories ({error})."
+        onboarding.workspace_repositories = repositories
+        return None
     completed, error = onboarding.readiness._query(
         onboarding.query, ["git", "-C", target, "rev-parse", "--show-toplevel"], target
     )

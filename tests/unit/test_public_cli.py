@@ -9,6 +9,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
@@ -246,6 +247,58 @@ class ParsingAndTargetTests(PublicCliCase):
         self.assertEqual(parser.prog, "specfactory")
         self.assertNotIn("factory", parser._subparsers._group_actions[0].choices)
         self.assertEqual(list(parser._subparsers._group_actions[0].choices), ["init"])
+
+
+class WorkspaceCliTests(PublicCliCase):
+    def test_missing_workspace_spec_kit_gives_manual_root_setup_instructions(self):
+        world = self.world(spec_kit="none")
+        repositories = [
+            {"path": "clients/web", "branch": "main", "head": "abc123", "clean": True, "dirty_paths": 0},
+            {"path": "services/api", "branch": "main", "head": "def456", "clean": True, "dirty_paths": 0},
+        ]
+        with mock.patch.object(READINESS, "discover_workspace_repositories", return_value=(repositories, None)):
+            code = self.run_cli(world, "init", "--workspace", "--dry-run")
+
+        self.assertEqual(code, 2)
+        self.assertIn("specify init --here --integration copilot", self.text(world))
+        self.assertIn("review its merge prompt", self.text(world))
+        self.assertIn("never uses --force", self.text(world))
+        self.assertEqual(world.commands("script"), [])
+        self.assertEqual(world.commands("setup"), [])
+
+    def test_workspace_mode_forwards_flag_and_does_not_prompt_for_preferences(self):
+        world = self.world()
+        repositories = [
+            {"path": "clients/web", "branch": "main", "head": "abc123", "clean": True, "dirty_paths": 0},
+            {"path": "services/api", "branch": "main", "head": "def456", "clean": False, "dirty_paths": 1},
+        ]
+        with mock.patch.object(READINESS, "discover_workspace_repositories", return_value=(repositories, None)):
+            code = self.run_cli(world, "init", "--workspace", answers=["y"])
+
+        self.assertEqual(code, 0, self.text(world))
+        self.assertEqual(len(world.prompts()), 1)
+        self.assertEqual(world.helper_runs(), [])
+        self.assertIn("services/api (branch main; HEAD def456; dirty (1 path(s)))", self.text(world))
+        self.assertIn("child repositories were not modified", self.text(world))
+        self.assertTrue(all("--workspace" in event[1] for event in world.engine_runs(dry=True)))
+        self.assertTrue(all("--workspace" in event[1] for event in world.engine_runs(dry=False)))
+        arguments = world.engine_runs(dry=True)[0][1]
+        self.assertEqual(arguments[arguments.index("--target") + 1], str(self.target))
+
+    def test_declining_workspace_install_never_runs_the_real_installer(self):
+        world = self.world()
+        repositories = [
+            {"path": "clients/web", "branch": "main", "head": "abc123", "clean": True, "dirty_paths": 0},
+            {"path": "services/api", "branch": "main", "head": "def456", "clean": True, "dirty_paths": 0},
+        ]
+        with mock.patch.object(READINESS, "discover_workspace_repositories", return_value=(repositories, None)):
+            code = self.run_cli(world, "init", "--workspace", answers=["n"])
+
+        self.assertEqual(code, 2)
+        self.assertEqual(len(world.engine_runs(dry=True)), 1)
+        self.assertEqual(world.engine_runs(dry=False), [])
+        self.assertEqual(world.helper_runs(), [])
+        self.assertIn("Declined", self.text(world))
 
 
 class PreviewAndConsentTests(PublicCliCase):

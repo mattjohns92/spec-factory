@@ -30,6 +30,23 @@ uvx --from "https://github.com/mattjohns92/spec-factory/releases/download/v0.1.0
 
 This command downloads the published wheel from GitHub Releases; it does not use PyPI.
 
+### Multi-Repository VS Code Workspaces
+
+Workspace installation is supported by builds that include the `--workspace` option. The pinned `v0.1.0` wheel above predates this option; use a release that includes workspace support before running these commands:
+
+```powershell
+specfactory init --workspace --target "C:\work\my-workspace" --dry-run
+specfactory init --workspace --target "C:\work\my-workspace"
+```
+
+The target must be a Gitless workspace root outside any Git working tree and contain at least two independent child Git repositories. Spec Factory reads each child repository's path, branch, HEAD, and working-tree state, then installs one shared set of agents and scripts at the workspace root. It does not write files or Git metadata in child repositories, initialize Git at the root, change Git excludes, or prompt for model preferences. `.factory/workspace.json` records the child paths found during installation; readiness reports live child state and notes later inventory changes.
+
+Spec Kit must be initialized and its Copilot integration valid at the workspace root. If needed, initialize it there yourself with `specify init --here --integration copilot`, review Specify's merge prompt, and run Spec Factory again. Do not use `--force`. The root-level Spec Kit configuration and `specs/` are shared; existing Spec Kit configuration inside child repositories is outside this installation boundary and is not modified.
+
+Open the workspace root in VS Code so its `.github/agents` files are in the opened workspace. Readiness does not verify that Copilot Chat lists the agents or that live delegation works.
+
+VS Code's usual single-folder workspace is the simplest layout: open the physical parent directory directly. A saved multi-root `.code-workspace` is different. The installer still targets the physical parent directory, not the `.code-workspace` file; include that parent as a workspace folder or the parent's `.github/agents` directory is outside the open workspace. Opening only the individual service directories does not expose the shared parent agents. Some extensions and tools remain scoped to the first or active workspace folder, so a multi-root workspace does not guarantee that a Copilot session can navigate every service. Verify the picker and cross-service context in the actual session; file placement alone is not evidence of delegation.
+
 ### Choose Factory Lead
 
 After installation, open the project folder in VS Code, open Copilot Chat, open the agent picker, and select **Factory Lead**. Factory Lead coordinates work with the installed specialist agents and pauses for your approval of specification and plan steps.

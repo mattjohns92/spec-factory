@@ -172,6 +172,75 @@ class ReadinessCheckTests(unittest.TestCase):
         self.assert_status("speckit-config", readiness.PASS)
         self.assert_status("specialist-profiles", readiness.PASS)
 
+    def test_workspace_discovery_reports_nested_repositories_and_working_tree_state(self):
+        workspace = self.root / "application"
+        workspace.mkdir()
+        paths = ("services/api", "clients/web", "jobs/worker")
+        repositories = []
+        for relative in paths:
+            repository = workspace / relative
+            repository.mkdir(parents=True)
+            subprocess.run(["git", "init", "-q"], cwd=repository, check=True)
+            (repository / "tracked.txt").write_text("committed\n", encoding="utf-8")
+            subprocess.run(["git", "add", "tracked.txt"], cwd=repository, check=True)
+            subprocess.run(
+                ["git", "-c", "user.name=tester", "-c", "user.email=tester@example.invalid",
+                 "commit", "-q", "-m", "initial"],
+                cwd=repository, check=True,
+            )
+            repositories.append(repository)
+        index_bytes = {repository: (repository / ".git" / "index").read_bytes() for repository in repositories}
+        (repositories[1] / "tracked.txt").write_text("uncommitted\n", encoding="utf-8")
+
+        discovered, error = readiness.discover_workspace_repositories(workspace)
+
+        self.assertIsNone(error)
+        state = {item["path"]: item for item in discovered}
+        self.assertEqual(sorted(state), sorted(paths))
+        self.assertTrue(state["services/api"]["clean"])
+        self.assertFalse(state["clients/web"]["clean"])
+        self.assertEqual(state["clients/web"]["dirty_paths"], 1)
+        self.assertTrue(state["jobs/worker"]["clean"])
+        self.assertEqual(
+            {repository: (repository / ".git" / "index").read_bytes() for repository in repositories},
+            index_bytes,
+        )
+
+    def test_workspace_manifest_reports_live_child_repository_state(self):
+        workspace = self.root / "workspace"
+        workspace.mkdir()
+        paths = ("clients/web", "services/api")
+        for relative in paths:
+            repository = workspace / relative
+            repository.mkdir(parents=True)
+            subprocess.run(["git", "init", "-q"], cwd=repository, check=True)
+            subprocess.run(
+                ["git", "-c", "user.name=tester", "-c", "user.email=tester@example.invalid",
+                 "commit", "--allow-empty", "-q", "-m", "initial"],
+                cwd=repository, check=True,
+            )
+        manifest = workspace / readiness.WORKSPACE_MANIFEST_PATH
+        manifest.parent.mkdir(parents=True)
+        manifest.write_text(
+            json.dumps({"version": 1, "repositories": list(paths[:1])}), encoding="utf-8"
+        )
+        (workspace / "clients/web" / "pending.txt").write_text("change\n", encoding="utf-8")
+
+        result = readiness.check_git(workspace)
+
+        self.assertEqual(result.status, readiness.INFO)
+        self.assertIn("inventory has changed since installation", result.finding)
+        self.assertIn("clients/web (", result.finding)
+        self.assertIn("dirty: 1 path(s)", result.finding)
+        self.assertIn("services/api (", result.finding)
+        self.assertIn("clean)", result.finding)
+
+    def test_workspace_discovery_refuses_a_filesystem_root(self):
+        discovered, error = readiness.discover_workspace_repositories(Path(self.root.anchor))
+
+        self.assertEqual(discovered, [])
+        self.assertIn("filesystem root", error)
+
     def test_verdict_is_never_plain_ready(self):
         _, output = self.run_main()
         lines = output.splitlines()
@@ -688,6 +757,19 @@ class InstalledModeTests(unittest.TestCase):
             document = {"version": 1, "source_revision": "unknown", "files": self.manifest_files()}
         text = document if isinstance(document, str) else json.dumps(document)
         self.write(readiness.MANIFEST_PATH, text)
+
+    def test_workspace_install_manifest_accepts_repository_index_without_git(self):
+        workspace_data = json.dumps({"version": 1, "repositories": ["clients/web", "services/api"]})
+        workspace_path = self.write(readiness.WORKSPACE_MANIFEST_PATH, workspace_data)
+        files = self.manifest_files()
+        files[readiness.WORKSPACE_MANIFEST_PATH] = readiness.fingerprint(workspace_path.read_bytes())
+        self.write_manifest({"version": 1, "source_revision": "test", "files": files})
+
+        result = readiness.check_install_manifest(self.root, self.runner)
+
+        self.assertEqual(result.status, readiness.PASS)
+        self.assertIn("workspace repository index", result.finding)
+        self.assertEqual(self.runner.git_calls, [])
 
     # installed-mode pointer handling
     def test_manifest_path_constant(self):

@@ -441,6 +441,28 @@ def _validate_manifest(root):
     return None
 
 
+def _validate_workspace_manifest(root):
+    path = os.path.join(root, *readiness.WORKSPACE_MANIFEST_PATH.split("/"))
+    state, _ = _classify(root, readiness.WORKSPACE_MANIFEST_PATH, lambda data: True)
+    if state != "unchanged":
+        return None
+    try:
+        with open(path, "rb") as handle:
+            document = json.loads(handle.read().decode("utf-8"))
+    except (OSError, UnicodeError, ValueError):
+        return "it is not valid JSON"
+    paths = document.get("repositories") if isinstance(document, dict) else None
+    if (
+        not isinstance(document, dict)
+        or type(document.get("version")) is not int
+        or document["version"] != 1
+        or not isinstance(paths, list)
+        or any(not isinstance(item, str) or not item for item in paths)
+    ):
+        return "it is not a version 1 workspace manifest"
+    return None
+
+
 def main(
     argv=None, runner=readiness.default_runner, environment=None, which=None,
     stdout=None, readiness_runner=None,
@@ -459,9 +481,10 @@ def main(
         return 2
 
     parser = argparse.ArgumentParser(
-        description="Install the Software Factory specialist team into a Git repository."
+        description="Install the Software Factory specialist team into a Git repository or workspace."
     )
-    parser.add_argument("--target", required=True, help="root directory of a local Git working tree")
+    parser.add_argument("--target", required=True, help="root directory of a Git working tree or Gitless workspace")
+    parser.add_argument("--workspace", action="store_true", help="install once at a Gitless root with multiple child repositories")
     parser.add_argument("--dry-run", action="store_true", help="print the plan and change nothing")
     try:
         arguments = parser.parse_args(argv)
@@ -480,18 +503,24 @@ def main(
         return refuse(f"Refused: --target must be an existing directory: {given}")
     target = os.path.realpath(os.path.abspath(given))
 
-    completed, error = _git_query(runner, target, "rev-parse", "--show-toplevel")
-    try:
-        same = bool(not error and os.path.samefile(completed.stdout.strip(), target))
-    except OSError:
-        same = False
-    if not same:
-        return refuse(
-            f"Refused: {target} is not the root of a Git working tree. Nothing was written."
-        )
-    completed, error = _git_query(runner, target, "rev-parse", "--is-bare-repository")
-    if error or completed.stdout.strip() != "false":
-        return refuse("Refused: the target is a bare repository. Nothing was written.")
+    workspace_repositories = []
+    if arguments.workspace:
+        workspace_repositories, error = readiness.discover_workspace_repositories(target, runner)
+        if error:
+            return refuse(f"Refused: {error}. Nothing was written.")
+    else:
+        completed, error = _git_query(runner, target, "rev-parse", "--show-toplevel")
+        try:
+            same = bool(not error and os.path.samefile(completed.stdout.strip(), target))
+        except OSError:
+            same = False
+        if not same:
+            return refuse(
+                f"Refused: {target} is not the root of a Git working tree. Nothing was written."
+            )
+        completed, error = _git_query(runner, target, "rev-parse", "--is-bare-repository")
+        if error or completed.stdout.strip() != "false":
+            return refuse("Refused: the target is a bare repository. Nothing was written.")
     try:
         is_source = os.path.samefile(target, SOURCE_ROOT) or _is_factory_source_checkout(target)
     except OSError:
@@ -507,24 +536,31 @@ def main(
             f"Refused: {MANIFEST_PATH} is an unsupported manifest ({problem}). Nothing was written."
         )
 
-    completed, error = _git_query(runner, target, "ls-files", "--", PREFERENCES_PATH)
-    if error:
-        return refuse(f"Refused: could not query tracked files ({error}). Nothing was written.")
-    if completed.stdout.strip():
-        return refuse(
-            f"Refused: {PREFERENCES_PATH} is already tracked by Git, so an exclude rule would not "
-            "protect it.\n"
-            "Nothing was written. Untrack it yourself, then re-run:\n"
-            f"    git rm --cached {PREFERENCES_PATH}"
-        )
-    ignored, rule, error = _ignored(runner, target, MANIFEST_PATH)
-    if error:
-        return refuse(f"Refused: could not verify the manifest ignore state ({error}). Nothing was written.")
-    if ignored:
-        return refuse(
-            f"Refused: {MANIFEST_PATH} is ignored by {rule or 'a Git ignore rule'}; the manifest "
-            "must be shareable.\nNothing was written. Adjust that ignore rule, then re-run."
-        )
+    if arguments.workspace:
+        problem = _validate_workspace_manifest(target)
+        if problem:
+            return refuse(
+                f"Refused: {readiness.WORKSPACE_MANIFEST_PATH} is unsupported ({problem}). Nothing was written."
+            )
+    else:
+        completed, error = _git_query(runner, target, "ls-files", "--", PREFERENCES_PATH)
+        if error:
+            return refuse(f"Refused: could not query tracked files ({error}). Nothing was written.")
+        if completed.stdout.strip():
+            return refuse(
+                f"Refused: {PREFERENCES_PATH} is already tracked by Git, so an exclude rule would not "
+                "protect it.\n"
+                "Nothing was written. Untrack it yourself, then re-run:\n"
+                f"    git rm --cached {PREFERENCES_PATH}"
+            )
+        ignored, rule, error = _ignored(runner, target, MANIFEST_PATH)
+        if error:
+            return refuse(f"Refused: could not verify the manifest ignore state ({error}). Nothing was written.")
+        if ignored:
+            return refuse(
+                f"Refused: {MANIFEST_PATH} is ignored by {rule or 'a Git ignore rule'}; the manifest "
+                "must be shareable.\nNothing was written. Adjust that ignore rule, then re-run."
+            )
 
     findings = _spec_kit_refusal(runner, target, which)
     if findings:
@@ -535,6 +571,14 @@ def main(
         )
 
     files = {relative: fingerprint(data) for relative, data in sources.items()}
+    workspace_data = None
+    if arguments.workspace:
+        workspace_document = {
+            "version": 1,
+            "repositories": [item["path"] for item in workspace_repositories],
+        }
+        workspace_data = (json.dumps(workspace_document, indent=2, sort_keys=True) + "\n").encode("utf-8")
+        files[readiness.WORKSPACE_MANIFEST_PATH] = fingerprint(workspace_data)
     manifest = _manifest_bytes(_source_revision(runner), files)
 
     def manifest_matches(data):
@@ -549,9 +593,14 @@ def main(
         matches = lambda data, r=relative: fingerprint(data) == files[r]
         entries.append((relative, *_classify(target, relative, matches), sources[relative]))
     entries.append((MANIFEST_PATH, *_classify(target, MANIFEST_PATH, manifest_matches), manifest))
+    if workspace_data is not None:
+        workspace_matches = lambda data: fingerprint(data) == files[readiness.WORKSPACE_MANIFEST_PATH]
+        entries.append((readiness.WORKSPACE_MANIFEST_PATH,
+                        *_classify(target, readiness.WORKSPACE_MANIFEST_PATH, workspace_matches),
+                        workspace_data))
     conflicts = [(relative, reason) for relative, state, reason, _ in entries if state == "conflict"]
 
-    exclude = _plan_exclude(runner, target)
+    exclude = _plan_exclude(runner, target) if not arguments.workspace else {"state": "not-applicable"}
     warnings = _ignored_managed_paths(runner, target) or []
 
     emit(f"Target: {target}")
@@ -561,7 +610,9 @@ def main(
         else:
             emit(f"[{state}]".ljust(12) + relative)
     unresolved = False
-    if exclude["state"] == "already-ignored":
+    if exclude["state"] == "not-applicable":
+        emit("[exclude]   not applicable; Gitless workspace root")
+    elif exclude["state"] == "already-ignored":
         rule = exclude["rule"]
         emit(f"[exclude]   already ignored{f' by {rule}' if rule else ''}; no change")
     elif exclude["state"] == "append":
@@ -595,6 +646,14 @@ def main(
         return 1 if conflicts or unresolved else 0
     if conflicts or unresolved:
         return 1
+
+    if arguments.workspace:
+        current_repositories, error = readiness.discover_workspace_repositories(target, runner)
+        if error or [item["path"] for item in current_repositories] != [
+            item["path"] for item in workspace_repositories
+        ]:
+            emit("Refused: child repository inventory changed during planning; nothing was written.")
+            return 1
 
     if exclude["state"] == "append":
         try:
@@ -639,15 +698,16 @@ def main(
         created.append(relative)
         emit(f"[created]   {relative}")
 
-    ignored, _, error = _ignored(runner, target, PREFERENCES_PATH)
-    manifest_ignored, _, manifest_error = _ignored(runner, target, MANIFEST_PATH)
-    if not ignored or manifest_ignored is not False:
-        emit("error: final verification failed; the installation is not reported as successful.")
-        if not ignored:
-            emit(f"    {PREFERENCES_PATH} is not verified as ignored ({error or 'not ignored'}).")
-        if manifest_ignored is not False:
-            emit(f"    {MANIFEST_PATH} is not verified as shareable ({manifest_error or 'it is ignored'}).")
-        return 1
+    if not arguments.workspace:
+        ignored, _, error = _ignored(runner, target, PREFERENCES_PATH)
+        manifest_ignored, _, manifest_error = _ignored(runner, target, MANIFEST_PATH)
+        if not ignored or manifest_ignored is not False:
+            emit("error: final verification failed; the installation is not reported as successful.")
+            if not ignored:
+                emit(f"    {PREFERENCES_PATH} is not verified as ignored ({error or 'not ignored'}).")
+            if manifest_ignored is not False:
+                emit(f"    {MANIFEST_PATH} is not verified as shareable ({manifest_error or 'it is ignored'}).")
+            return 1
 
     if not created and exclude["state"] != "append":
         emit("already installed: nothing to change.")
@@ -665,9 +725,13 @@ def main(
     if result.stderr:
         print(result.stderr.rstrip("\n"), file=sys.stderr)
     emit("Next steps:")
-    emit("    1. Set model tiers: python scripts/specialist_models.py set-tier ...")
-    emit("    2. Open the project in VS Code and select Factory Lead in Copilot Chat.")
-    emit("    3. Re-run readiness any time: python scripts/check_factory_readiness.py")
+    if arguments.workspace:
+        emit("    1. Open this workspace root in VS Code and select Factory Lead in Copilot Chat.")
+        emit("    2. Re-run readiness any time: python scripts/check_factory_readiness.py")
+    else:
+        emit("    1. Set model tiers: python scripts/specialist_models.py set-tier ...")
+        emit("    2. Open the project in VS Code and select Factory Lead in Copilot Chat.")
+        emit("    3. Re-run readiness any time: python scripts/check_factory_readiness.py")
     return 3 if result.returncode != 0 else 0
 
 

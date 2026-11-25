@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import re
+import stat
 import subprocess
 import sys
 
@@ -37,6 +38,7 @@ SPECKIT_FILES = (
 
 MANIFEST_PATH = ".github/software-factory/install-manifest.json"
 PREFERENCES_PATH = ".factory/model-preferences.json"
+WORKSPACE_MANIFEST_PATH = ".factory/workspace.json"
 MANAGED_FILES = (
     ".github/agents/factory-lead.agent.md",
     ".github/agents/architect.agent.md",
@@ -67,6 +69,9 @@ class CheckResult:
 def default_runner(arguments, cwd, timeout):
     arguments = list(arguments)
     environment = dict(os.environ)
+    if arguments and arguments[0] == "git":
+        environment["GIT_OPTIONAL_LOCKS"] = "0"
+        arguments[1:1] = ["-c", "core.fsmonitor=false"]
     environment["PATH"] = os.pathsep.join(
         directory for directory in environment.get("PATH", "").split(os.pathsep)
         if directory and Path(directory).is_absolute()
@@ -189,6 +194,112 @@ def _query_status(runner, arguments, cwd):
     except OSError as error:
         return None, f"could not run: {type(error).__name__}"
     return completed.returncode, None
+
+
+def _is_link_or_junction(path):
+    try:
+        info = os.lstat(path)
+    except OSError:
+        return True
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    return stat.S_ISLNK(info.st_mode) or bool(getattr(info, "st_file_attributes", 0) & reparse_flag)
+
+
+def discover_workspace_repositories(root, runner=default_runner):
+    """Return nested independent working trees and their current state, or an error."""
+    root = Path(os.path.realpath(os.path.abspath(root)))
+    if os.path.normcase(str(root)) == os.path.normcase(str(root.anchor)):
+        return [], "workspace root cannot be a filesystem root"
+    completed, error = _query(runner, ["git", "-C", str(root), "rev-parse", "--show-toplevel"], str(root))
+    if not error:
+        return [], f"workspace root is inside Git repository {completed.stdout.strip()}"
+    if error != "exited with status 128":
+        return [], f"could not inspect workspace root for Git ({error})"
+    for ancestor in (root, *root.parents):
+        if os.path.lexists(ancestor / ".git"):
+            return [], f"Git metadata exists at {ancestor}, but Git could not resolve the workspace root"
+
+    repositories = []
+    common_directories = set()
+    for current, directories, files in os.walk(root, topdown=True, followlinks=False):
+        current_path = Path(current)
+        directories[:] = sorted(
+            name for name in directories
+            if name != ".git" and not _is_link_or_junction(current_path / name)
+        )
+        marker = current_path / ".git"
+        if not os.path.lexists(marker):
+            continue
+        if _is_link_or_junction(marker):
+            return [], f"repository metadata is a link or junction: {marker}"
+        try:
+            mode = os.lstat(marker).st_mode
+        except OSError as error:
+            return [], f"could not inspect repository metadata at {marker} ({type(error).__name__})"
+        if not (stat.S_ISDIR(mode) or stat.S_ISREG(mode)):
+            return [], f"repository metadata is not a regular file or directory: {marker}"
+
+        repository_root, error = _query(
+            runner, ["git", "-C", str(current_path), "rev-parse", "--show-toplevel"], str(current_path)
+        )
+        if error:
+            return [], f"invalid Git repository at {current_path} ({error})"
+        try:
+            if not os.path.samefile(repository_root.stdout.strip(), current_path):
+                return [], f"Git repository boundary does not match its .git marker: {current_path}"
+        except OSError:
+            return [], f"could not verify Git repository boundary at {current_path}"
+
+        bare, error = _query(
+            runner, ["git", "-C", str(current_path), "rev-parse", "--is-bare-repository"], str(current_path)
+        )
+        if error or bare.stdout.strip() != "false":
+            return [], f"repository is bare or could not be verified: {current_path}"
+        common, error = _query(
+            runner, ["git", "-C", str(current_path), "rev-parse", "--git-common-dir"], str(current_path)
+        )
+        if error:
+            return [], f"could not identify Git metadata for {current_path} ({error})"
+        common_path = Path(common.stdout.strip())
+        if not common_path.is_absolute():
+            common_path = current_path / common_path
+        common_key = os.path.normcase(os.path.realpath(common_path))
+        if common_key in common_directories:
+            return [], f"repositories share Git history metadata: {current_path}"
+        common_directories.add(common_key)
+
+        status, error = _query(
+            runner,
+            ["git", "-C", str(current_path), "status", "--porcelain=v1", "--untracked-files=normal"],
+            str(current_path),
+        )
+        if error:
+            return [], f"could not inspect working tree at {current_path} ({error})"
+        branch, error = _query(
+            runner, ["git", "-C", str(current_path), "branch", "--show-current"], str(current_path)
+        )
+        if error:
+            return [], f"could not inspect branch at {current_path} ({error})"
+        head, head_error = _query(
+            runner, ["git", "-C", str(current_path), "rev-parse", "--short", "HEAD"], str(current_path)
+        )
+        relative = os.path.relpath(current_path, root).replace(os.sep, "/")
+        status_entries = len((status.stdout or "").splitlines())
+        repositories.append(
+            {
+                "path": relative,
+                "name": current_path.name,
+                "branch": branch.stdout.strip() or "(detached)",
+                "head": head.stdout.strip() if not head_error else None,
+                "clean": status_entries == 0,
+                "dirty_paths": status_entries,
+            }
+        )
+
+    repositories.sort(key=lambda item: item["path"].casefold())
+    if len(repositories) < 2:
+        return [], f"found {len(repositories)} child Git repository; at least two are required"
+    return repositories, None
 
 
 def check_specify(root, runner, which):
@@ -406,10 +517,15 @@ def _managed_file_problem(root, relative, recorded):
 
 
 def check_install_manifest(root, runner):
-    expected = (
-        "an intact install manifest, unmodified managed files, and a locally ignored "
-        "preferences file"
-    )
+    workspace_mode = os.path.lexists(root / WORKSPACE_MANIFEST_PATH)
+    expected_files = set(MANAGED_FILES)
+    if workspace_mode:
+        expected_files.add(WORKSPACE_MANIFEST_PATH)
+    expected = "an intact install manifest and unmodified managed files"
+    if workspace_mode:
+        expected += " with an intact workspace repository index"
+    else:
+        expected += ", and a locally ignored preferences file"
     try:
         manifest = json.loads((root / MANIFEST_PATH).read_text(encoding="utf-8"))
     except (OSError, UnicodeError, ValueError):
@@ -420,7 +536,7 @@ def check_install_manifest(root, runner):
         type(version) is not int
         or version != 1
         or not isinstance(files, dict)
-        or set(files) != set(MANAGED_FILES)
+        or set(files) != expected_files
         or any(
             not isinstance(value, str) or not _FINGERPRINT_PATTERN.fullmatch(value)
             for value in files.values()
@@ -433,20 +549,21 @@ def check_install_manifest(root, runner):
 
     problems = [
         problem
-        for problem in (_managed_file_problem(root, relative, files[relative]) for relative in MANAGED_FILES)
+        for problem in (_managed_file_problem(root, relative, files[relative]) for relative in expected_files)
         if problem
     ]
-    code, error = _query_status(
-        runner,
-        ["git", "-C", str(root), "check-ignore", "-q", "--no-index", PREFERENCES_PATH],
-        root,
-    )
     ignore_problem = None
-    if code == 1:
-        ignore_problem = f"{PREFERENCES_PATH} is not ignored by Git"
-    elif code != 0:
-        detail = error or f"git check-ignore exited with status {code}"
-        ignore_problem = f"{PREFERENCES_PATH}: ignore state could not be verified ({detail})"
+    if not workspace_mode:
+        code, error = _query_status(
+            runner,
+            ["git", "-C", str(root), "check-ignore", "-q", "--no-index", PREFERENCES_PATH],
+            root,
+        )
+        if code == 1:
+            ignore_problem = f"{PREFERENCES_PATH} is not ignored by Git"
+        elif code != 0:
+            detail = error or f"git check-ignore exited with status {code}"
+            ignore_problem = f"{PREFERENCES_PATH}: ignore state could not be verified ({detail})"
 
     if problems:
         steps = [
@@ -466,8 +583,11 @@ def check_install_manifest(root, runner):
         )
     return CheckResult(
         "install-manifest", PASS,
-        f"{len(MANAGED_FILES)} managed files match the install manifest; "
-        f"{PREFERENCES_PATH} is ignored",
+        (
+            f"{len(MANAGED_FILES)} managed files and workspace repository index match the install manifest"
+            if workspace_mode else
+            f"{len(MANAGED_FILES)} managed files match the install manifest; {PREFERENCES_PATH} is ignored"
+        ),
     )
 
 
@@ -624,7 +744,57 @@ def check_policy(root):
     )
 
 
-def check_git(root):
+def check_git(root, runner=default_runner):
+    workspace_manifest = root / WORKSPACE_MANIFEST_PATH
+    if workspace_manifest.exists():
+        try:
+            document = json.loads(workspace_manifest.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, ValueError):
+            return CheckResult(
+                "git-state", FAIL, f"{WORKSPACE_MANIFEST_PATH} is unreadable or invalid JSON",
+                "a version 1 workspace manifest with relative repository paths",
+                "repair or remove the workspace manifest, then re-run readiness",
+            )
+        paths = document.get("repositories") if isinstance(document, dict) else None
+        if (
+            not isinstance(document, dict)
+            or type(document.get("version")) is not int
+            or document["version"] != 1
+            or not isinstance(paths, list)
+            or any(
+                not isinstance(path, str)
+                or not path
+                or "\\" in path
+                or Path(path).is_absolute()
+                or any(part in ("", ".", "..") for part in path.split("/"))
+                for path in paths
+            )
+        ):
+            return CheckResult(
+                "git-state", FAIL, f"{WORKSPACE_MANIFEST_PATH} has an unsupported structure",
+                "a version 1 workspace manifest with relative repository paths",
+                "repair or remove the workspace manifest, then re-run readiness",
+            )
+        repositories, error = discover_workspace_repositories(root, runner)
+        if error:
+            return CheckResult(
+                "git-state", FAIL, error,
+                "at least two independent child Git repositories under a Gitless workspace root",
+                "restore the workspace layout or update the workspace manifest",
+            )
+        actual_paths = [repository["path"] for repository in repositories]
+        inventory_changed = paths != actual_paths
+        states = "; ".join(
+            "{} ({}, {})".format(
+                item["path"], item["branch"],
+                "clean" if item["clean"] else f"dirty: {item['dirty_paths']} path(s)",
+            )
+            for item in repositories
+        )
+        drift = "; child repository inventory has changed since installation" if inventory_changed else ""
+        return CheckResult(
+            "git-state", INFO, f"Gitless workspace{drift}; current child repository state: {states}"
+        )
     if (root / ".git").exists():
         return CheckResult("git-state", INFO, "Git repository detected; working tree not inspected")
     return CheckResult("git-state", INFO, "not a Git repository root")
@@ -674,7 +844,7 @@ def run_checks(root, runner=default_runner, environment=None, which=None):
     results += [
         _guarded("interactive-hooks", check_hooks, root, environment),
         _guarded("runner-policy", check_policy, root),
-        _guarded("git-state", check_git, root),
+        _guarded("git-state", check_git, root, runner),
         _guarded("unverifiable", check_unverifiable),
     ]
     return results

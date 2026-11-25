@@ -169,6 +169,7 @@ class DistributionMetadataTests(unittest.TestCase):
 
     def test_wheel_and_sdist_allowlists_are_explicit_and_complete(self):
         targets = load_pyproject()["tool"]["hatch"]["build"]["targets"]
+        self.assertIn(".gitignore", targets["sdist"]["only-include"])
         expected = sorted(
             [f"src/specfactory/{name}" for name in CODE_FILES]
             + [f"src/specfactory/assets/{name}" for name in bundle.BUNDLED_ASSETS]
@@ -176,7 +177,7 @@ class DistributionMetadataTests(unittest.TestCase):
         self.assertEqual(sorted(targets["wheel"]["only-include"]), expected)
         self.assertEqual(
             sorted(targets["sdist"]["only-include"]),
-            sorted(expected + ["pyproject.toml", "README.md", "build-constraints.txt", "LICENSE"]),
+            sorted(expected + [".gitignore", "pyproject.toml", "README.md", "build-constraints.txt", "LICENSE"]),
         )
         self.assertEqual(targets["wheel"]["sources"], ["src"])
         for path in expected:

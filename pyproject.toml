@@ -47,6 +47,7 @@ only-include = [
 [tool.hatch.build.targets.sdist]
 ignore-vcs = true
 only-include = [
+    ".gitignore",
     "pyproject.toml",
     "README.md",
     "build-constraints.txt",
