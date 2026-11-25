@@ -377,7 +377,7 @@ class _Onboarding:
             marker = " (helper default)" if name == models.DEFAULT_PRESET else ""
             self.emit(f"  {name}{marker}: {roles}")
         self.emit(f"  Tiers: {', '.join(models.TIERS)}. 'quality-first' uses the 'quality' tier for every role and may cost more.")
-        self.emit("  Each tier needs a model ID you choose from the models available to you.")
+        self.emit("  Each tier needs the model identifier your Copilot task runtime accepts (not a display label); none is bundled or assumed.")
         preferences = Path(self.target) / self.readiness.PREFERENCES_PATH
         if preferences.exists():
             self.emit("  Existing preferences were found and are left unchanged; review them with")
@@ -388,6 +388,7 @@ class _Onboarding:
         else:
             self.emit("  Configure later: `python scripts/specialist_models.py set-preset <preset>` and")
             self.emit("  `python scripts/specialist_models.py set-tier <tier> <model-id>`.")
+            self.emit("  This is optional: Factory Lead offers the same setup when a specialist first needs a model.")
 
     def _configure_models(self, models):
         choice = self._ask_text(
@@ -406,7 +407,7 @@ class _Onboarding:
         chosen = {}
         for tier in needed:
             value = self._ask_text(
-                f"Model ID or display name for tier '{tier}' (one available to you; Enter to leave unset)"
+                f"Model ID for tier '{tier}' (the identifier your Copilot task runtime accepts, not a display label; Enter to leave unset)"
             )
             if not value:
                 continue

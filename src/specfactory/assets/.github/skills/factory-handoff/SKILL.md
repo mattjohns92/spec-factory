@@ -22,9 +22,15 @@ Include:
 - **Deliverable**: The result or artifact to return.
 - **Completion condition**: Observable evidence that the assignment is done.
 
+Keep assignments efficient: state the repository and paths in scope, ask specific questions, point to the relevant source files before any broad repository search, ask for concise evidence-backed findings, and tell the specialist to stop once it has sufficient evidence. Do not set arbitrary numeric limits that would block a necessary investigation.
+
 ## Model
 
-Before each delegation to architect, engineer, qa-engineer, or code-reviewer, run `python scripts/specialist_models.py resolve <role>` and pass the printed ID verbatim as the native `task` `model` argument (run it from the repository root). If it fails (unresolved or invalid), do not guess or silently inherit the session model; ask the owner. If the runtime rejects or cannot honor the requested model, report that exactly to the owner; do not retry without the `model` argument or substitute another model. Never escalate silently: recommend escalation with a reason and apply it only on the owner's instruction. Factory Lead's own model is never configured by this feature. Record requested versus actual model, tokens, and duration from runtime events (`python scripts/specialist_models.py report`), never from specialist text.
+Before each delegation to architect, engineer, qa-engineer, or code-reviewer, run `python scripts/specialist_models.py resolve <role>` and pass the printed ID verbatim as the native `task` `model` argument (run it from the repository root). If it fails (unresolved or invalid), do not guess or silently inherit the session model; ask the owner. If the runtime rejects or cannot honor the requested model, report that exactly to the owner; do not retry without the `model` argument or substitute another model. Never escalate silently: recommend escalation with a reason and apply it only on the owner's instruction. Factory Lead's own model is never configured by this feature.
+
+If `resolve` reports unresolved (exit 3), model setup is still optional until now: explain the issue, ask the owner for the identifier the task runtime accepts (not a Copilot display label; a prior delegation's runtime-reported `model` value from `report` is a safe source), and offer one shared starting model (`python scripts/specialist_models.py set-shared <model-id>`) with optional per-role overrides (`set-override <role> <model-id>`). Do not invent identifiers or choose an expensive model for the owner. State the exact commands, run them only after explicit owner approval, then run `resolve <role>` to verify before delegating. If the runtime later rejects an identifier, report it exactly and ask the owner for a replacement.
+
+Record requested versus actual model, parent-session model, `totalTokens`, `totalToolCalls`, and duration from runtime events (`python scripts/specialist_models.py report`), never from specialist text. `totalTokens` is a runtime-reported total of unknown composition and cost; do not present it as a billable cost or infer cache use. A requested model equal to the actual model does not show an override changed execution when the parent session used the same model. Permission events in the log are not evidence of a visible UI prompt.
 
 ## Handoff
 

@@ -1141,7 +1141,7 @@ class B6ConflictAndModelTests(WorldTestCase):
                 self.assertEqual(outcome["code"], 0, outcome["stdout"] + outcome["stderr"])
                 asked = [
                     re.search(r"tier '(\w+)'", p["prompt"]).group(1)
-                    for p in outcome["prompts"] if "Model ID or display name for tier" in p["prompt"]
+                    for p in outcome["prompts"] if "Model ID for tier" in p["prompt"]
                 ]
                 self.assertEqual(asked, needed, "no tier outside the preset's mapping may be requested")
                 self.assertEqual(outcome["unused"], [])

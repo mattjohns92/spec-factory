@@ -729,7 +729,7 @@ def main(
         emit("    1. Open this workspace root in VS Code and select Factory Lead in Copilot Chat.")
         emit("    2. Re-run readiness any time: python scripts/check_factory_readiness.py")
     else:
-        emit("    1. Set model tiers: python scripts/specialist_models.py set-tier ...")
+        emit("    1. Optional: set model tiers (python scripts/specialist_models.py set-tier ...); Factory Lead offers this when a specialist first needs a model.")
         emit("    2. Open the project in VS Code and select Factory Lead in Copilot Chat.")
         emit("    3. Re-run readiness any time: python scripts/check_factory_readiness.py")
     return 3 if result.returncode != 0 else 0

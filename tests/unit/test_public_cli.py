@@ -681,7 +681,7 @@ class ModelGuidanceTests(PublicCliCase):
         world = self.world()
         code = self.run_cli(world, "init", answers=["y", "budget", "model-b", "model-a", "y"])
         self.assertEqual(code, 0)
-        tier_prompts = [p[1] for p in world.prompts() if "Model ID or display name for tier" in p[1]]
+        tier_prompts = [p[1] for p in world.prompts() if "Model ID for tier" in p[1]]
         self.assertEqual(len(tier_prompts), 2)
         self.assertIn("'budget'", tier_prompts[0])
         self.assertIn("'balanced'", tier_prompts[1])
@@ -695,7 +695,7 @@ class ModelGuidanceTests(PublicCliCase):
     def test_quality_first_does_not_prompt_for_lower_tiers(self):
         world = self.world()
         self.run_cli(world, "init", answers=["y", "quality-first", "big-model", "y"])
-        tier_prompts = [p[1] for p in world.prompts() if "Model ID or display name for tier" in p[1]]
+        tier_prompts = [p[1] for p in world.prompts() if "Model ID for tier" in p[1]]
         self.assertEqual(len(tier_prompts), 1)
         self.assertIn("'quality'", tier_prompts[0])
         self.assertEqual(

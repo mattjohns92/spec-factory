@@ -451,7 +451,7 @@ class SpecialistModelsTests(unittest.TestCase):
         result = self.run_script(["report", "--events", str(self.events_path)])
         self.assertEqual(result.returncode, 0)
         self.assertIn("claude-opus", result.stdout)
-        self.assertIn("match: yes", result.stdout)
+        self.assertIn("requested == actual: yes", result.stdout)
 
     def test_report_inherited_session_inheritance(self):
         self.write_events([
@@ -478,7 +478,7 @@ class SpecialistModelsTests(unittest.TestCase):
         result = self.run_script(["report", "--events", str(self.events_path)])
         self.assertEqual(result.returncode, 0)
         self.assertIn("none (inherited)", result.stdout)
-        self.assertIn("match: n/a", result.stdout)
+        self.assertIn("requested == actual: n/a", result.stdout)
 
     def test_report_mismatch_requested_vs_actual(self):
         self.write_events([
@@ -508,7 +508,7 @@ class SpecialistModelsTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertIn("claude-haiku", result.stdout)
         self.assertIn("claude-sonnet", result.stdout)
-        self.assertIn("match: no", result.stdout)
+        self.assertIn("requested == actual: no", result.stdout)
 
     def test_report_task_argument_without_explicit_override_text(self):
         # task_argument without explicitModelOverride => "not available (task_argument, no explicitModelOverride recorded)"
@@ -536,7 +536,7 @@ class SpecialistModelsTests(unittest.TestCase):
         result = self.run_script(["report", "--events", str(self.events_path)])
         self.assertEqual(result.returncode, 0)
         self.assertIn("not available (task_argument, no explicitModelOverride recorded)", result.stdout)
-        self.assertIn("match: not available", result.stdout)
+        self.assertIn("requested == actual: not available", result.stdout)
 
     def test_report_task_argument_without_explicit_override_json(self):
         # Same but with JSON output

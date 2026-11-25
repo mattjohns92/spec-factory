@@ -26,6 +26,16 @@ DEFAULT_CONFIG = Path(__file__).resolve().parent.parent / ".factory" / "model-pr
 NOT_AVAILABLE = "not available"
 INHERITED = "none (inherited)"
 NO_OVERRIDE_RECORDED = "not available (task_argument, no explicitModelOverride recorded)"
+TOKENS_LABEL = "runtime-reported total; composition and cost unknown"
+PERMISSIONS_NOTE = (
+    "counts of permission events recorded in the log (whole session, not per delegation); "
+    "they do not show whether a prompt was visible in the UI. A 'human_response' decision source "
+    "records a human reply; 'host_policy' records an automatic decision."
+)
+LABEL_WARNING = (
+    "warning: '{value}' looks like a display label. The task runtime expects its own model identifier, "
+    "such as the 'model' value in a prior subagent.started event; confirm it before delegating."
+)
 
 EXIT_ERROR = 1
 EXIT_INVALID_CONFIG = 2
@@ -182,7 +192,7 @@ def cmd_resolve(arguments):
         tier = PRESETS[config["preset"]][arguments.role]
         print(
             f"{arguments.role}: unresolved (no override and tier '{tier}' of preset "
-            f"'{config['preset']}' has no model ID); set one with set-tier or set-override",
+            f"'{config['preset']}' has no model ID); set one with set-shared, set-tier, or set-override",
             file=sys.stderr,
         )
         return EXIT_UNRESOLVED
@@ -206,8 +216,26 @@ def cmd_set_preset(arguments):
     )
 
 
+def _warn_if_label(value):
+    if re.search(r"[ ()]", value):
+        print(LABEL_WARNING.format(value=value), file=sys.stderr)
+
+
+def cmd_set_shared(arguments):
+    """One shared starting model for every role: the balanced preset with one tier model."""
+    _check_model_id(arguments.model_id, "shared model")
+    _warn_if_label(arguments.model_id)
+
+    def change(config):
+        config["preset"] = "balanced"
+        config["tiers"]["balanced"] = arguments.model_id
+
+    return _mutate(arguments, change, f"all roles now use {arguments.model_id} (preset balanced); override per role if needed")
+
+
 def cmd_set_tier(arguments):
     _check_model_id(arguments.model_id, f"tier '{arguments.tier}'")
+    _warn_if_label(arguments.model_id)
     return _mutate(
         arguments,
         lambda config: config["tiers"].__setitem__(arguments.tier, arguments.model_id),
@@ -217,6 +245,7 @@ def cmd_set_tier(arguments):
 
 def cmd_set_override(arguments):
     _check_model_id(arguments.model_id, f"override '{arguments.role}'")
+    _warn_if_label(arguments.model_id)
     return _mutate(
         arguments,
         lambda config: config["overrides"].__setitem__(arguments.role, arguments.model_id),
@@ -246,10 +275,19 @@ def _newest_events_file():
 
 
 def _read_events(path):
-    """Return (started, completed, skipped): dicts keyed by toolCallId, and a bad-line count."""
+    """Return (started, completed, skipped, context) from an events file.
+
+    started/completed are dicts keyed by toolCallId; skipped counts bad lines. context holds the
+    parent session model in effect when each delegation started and the permission-event counts.
+    """
     started = {}
     completed = {}
     skipped = 0
+    parent_model = None
+    context = {
+        "parentModels": {},
+        "permissions": {"requested": 0, "completed": 0, "decisionSources": {}},
+    }
     with path.open("rb") as stream:
         for raw in stream:
             if not raw.strip():
@@ -263,16 +301,38 @@ def _read_events(path):
                 skipped += 1
                 continue
             kind = event.get("type")
-            if kind not in ("subagent.started", "subagent.completed"):
-                continue
             data = event.get("data")
-            call_id = data.get("toolCallId") if isinstance(data, dict) else None
-            if not isinstance(call_id, str) or not call_id:
-                skipped += 1
-                continue
-            # A duplicate toolCallId overwrites the earlier event of the same kind.
-            (started if kind == "subagent.started" else completed)[call_id] = data
-    return started, completed, skipped
+            if not isinstance(data, dict):
+                data = {}
+            if kind == "session.start":
+                selected = data.get("selectedModel")
+                # "auto" is a selection mode, not a model that could be compared.
+                if isinstance(selected, str) and selected and selected != "auto":
+                    parent_model = selected
+            elif kind == "session.model_change":
+                # Events carrying an agentId belong to a delegated agent, not the parent session.
+                new_model = data.get("newModel")
+                if "agentId" not in event and isinstance(new_model, str) and new_model:
+                    parent_model = new_model
+            elif kind == "permission.requested":
+                context["permissions"]["requested"] += 1
+            elif kind == "permission.completed":
+                context["permissions"]["completed"] += 1
+                source = _text(data.get("decisionSource"))
+                sources = context["permissions"]["decisionSources"]
+                sources[source] = sources.get(source, 0) + 1
+            elif kind in ("subagent.started", "subagent.completed"):
+                call_id = data.get("toolCallId")
+                if not isinstance(call_id, str) or not call_id:
+                    skipped += 1
+                    continue
+                # A duplicate toolCallId overwrites the earlier event of the same kind.
+                if kind == "subagent.started":
+                    started[call_id] = data
+                    context["parentModels"][call_id] = parent_model
+                else:
+                    completed[call_id] = data
+    return started, completed, skipped, context
 
 
 def _text(*values):
@@ -288,14 +348,32 @@ def _number(value):
     return None
 
 
-def _delegation(call_id, started, completed):
+def _override_effect(requested, evidence, actual, parent_model):
+    """Say what the events support about an override; equality alone is not proof it changed anything."""
+    if evidence == "none":
+        return "n/a (no override requested)"
+    if requested == NO_OVERRIDE_RECORDED or not actual:
+        return NOT_AVAILABLE
+    if any(model != requested for model in actual):
+        return "requested model not observed (actual differs from requested)"
+    if parent_model is None:
+        return "not demonstrated (parent session model not available)"
+    if parent_model == requested:
+        return "not demonstrated (parent session used the same model)"
+    return "consistent with override (actual differs from parent session model)"
+
+
+def _delegation(call_id, started, completed, parent_model=None):
     # Requested model comes only from the completed event's explicitModelOverride.
     requested = INHERITED
+    evidence = "none"
     explicit = completed.get("explicitModelOverride")
     if isinstance(explicit, str) and explicit:
         requested = explicit
+        evidence = "explicitModelOverride recorded"
     elif started.get("taskModelSource") == "task_argument":
         requested = NO_OVERRIDE_RECORDED
+        evidence = "task_argument only (no explicitModelOverride recorded)"
 
     started_model = _text(started.get("model"))
     completed_model = _text(completed.get("model"))
@@ -308,6 +386,7 @@ def _delegation(call_id, started, completed):
         match = "yes" if all(m == requested for m in actual) else "no"
 
     tokens = _number(completed.get("totalTokens"))
+    tool_calls = _number(completed.get("totalToolCalls"))
     duration = _number(completed.get("durationMs"))
     return {
         "toolCallId": call_id,
@@ -318,39 +397,58 @@ def _delegation(call_id, started, completed):
             completed.get("agentName"),
         ),
         "requested": requested,
+        "overrideEvidence": evidence,
         "taskModelSource": _text(started.get("taskModelSource")),
         "modelSelectionSource": _text(
             started.get("modelSelectionSource"), completed.get("modelSelectionSource")
         ),
+        "parentModel": _text(parent_model),
         "startedModel": started_model,
         "completedModel": completed_model,
+        "firstDispatchedModel": _text(completed.get("firstDispatchedModel")),
         "totalTokens": NOT_AVAILABLE if tokens is None else tokens,
+        "totalTokensNote": TOKENS_LABEL,
+        "totalToolCalls": NOT_AVAILABLE if tool_calls is None else tool_calls,
         "durationMs": NOT_AVAILABLE if duration is None else duration,
         "match": match,
+        "overrideEffect": _override_effect(requested, evidence, actual, parent_model),
     }
 
 
 def build_report(path):
-    started, completed, skipped = _read_events(path)
+    started, completed, skipped, context = _read_events(path)
     delegations = [
-        _delegation(call_id, started.get(call_id, {}), completed.get(call_id, {}))
+        _delegation(
+            call_id,
+            started.get(call_id, {}),
+            completed.get(call_id, {}),
+            context["parentModels"].get(call_id),
+        )
         for call_id in list(started) + [c for c in completed if c not in started]
     ]
+    # Totals sum task-level figures only; session-wide usage is not attributed to any delegation.
     totals = {}
     for item in delegations:
-        entry = totals.setdefault(item["agent"], {"delegations": 0, "tokens": 0, "durationMs": 0})
+        entry = totals.setdefault(
+            item["agent"], {"delegations": 0, "tokens": 0, "toolCalls": 0, "durationMs": 0}
+        )
         entry["delegations"] += 1
-        if item["totalTokens"] != NOT_AVAILABLE:
-            entry["tokens"] += item["totalTokens"]
-        if item["durationMs"] != NOT_AVAILABLE:
-            entry["durationMs"] += item["durationMs"]
+        for key, field in (("tokens", "totalTokens"), ("toolCalls", "totalToolCalls"), ("durationMs", "durationMs")):
+            if item[field] != NOT_AVAILABLE:
+                entry[key] += item[field]
+    permissions = context["permissions"]
     return {
         "events": str(path),
         "skippedLines": skipped,
         "delegations": delegations,
         "totals": totals,
+        "permissions": {
+            "requestedEvents": permissions["requested"],
+            "completedEvents": permissions["completed"],
+            "decisionSources": permissions["decisionSources"],
+            "note": PERMISSIONS_NOTE,
+        },
     }
-
 
 def cmd_report(arguments):
     path = arguments.events
@@ -379,19 +477,30 @@ def cmd_report(arguments):
         print(f"   requested: {item['requested']}")
         print(f"   taskModelSource: {item['taskModelSource']}")
         print(f"   modelSelectionSource: {item['modelSelectionSource']}")
+        print(f"   parent session model: {item['parentModel']}")
         print(f"   started model: {item['startedModel']}")
         print(f"   completed model: {item['completedModel']}")
-        print(f"   totalTokens: {item['totalTokens']}")
+        print(f"   firstDispatchedModel: {item['firstDispatchedModel']}")
+        print(f"   override evidence: {item['overrideEvidence']}")
+        print(f"   requested == actual: {item['match']}")
+        print(f"   override effect: {item['overrideEffect']}")
+        print(f"   totalTokens: {item['totalTokens']} ({TOKENS_LABEL})")
+        print(f"   totalToolCalls: {item['totalToolCalls']}")
         print(f"   durationMs: {item['durationMs']}")
-        print(f"   match: {item['match']}")
-    print("per-agent totals:")
+    print("per-agent totals (sums of task-level figures; session-wide usage is not attributed):")
     if not report["totals"]:
         print("  (none)")
     for agent, entry in report["totals"].items():
         print(
             f"  {agent}: delegations={entry['delegations']} "
-            f"tokens={entry['tokens']} durationMs={entry['durationMs']}"
+            f"tokens={entry['tokens']} toolCalls={entry['toolCalls']} durationMs={entry['durationMs']}"
         )
+    permissions = report["permissions"]
+    print(
+        f"permission events: requested={permissions['requestedEvents']} "
+        f"completed={permissions['completedEvents']} decisionSources={permissions['decisionSources']}"
+    )
+    print(f"  note: {permissions['note']}")
     return 0
 
 
@@ -418,6 +527,12 @@ def _build_parser():
     preset = commands.add_parser("set-preset", help="select a preset")
     preset.add_argument("preset", choices=tuple(PRESETS))
     preset.set_defaults(handler=cmd_set_preset)
+
+    shared = commands.add_parser(
+        "set-shared", help="use one model ID for every role (balanced preset); overrides stay optional"
+    )
+    shared.add_argument("model_id", metavar="MODEL_ID")
+    shared.set_defaults(handler=cmd_set_shared)
 
     tier = commands.add_parser("set-tier", help="set the model ID for a tier")
     tier.add_argument("tier", choices=TIERS)
