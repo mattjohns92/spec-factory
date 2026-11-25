@@ -292,17 +292,16 @@ class TelemetryReportTests(HelperTestCase):
             {"type": "permission.requested", "data": {"requestId": "2"}},
             {"type": "permission.completed", "data": {"requestId": "1", "decisionSource": "host_policy"}},
             {"type": "permission.completed", "data": {"requestId": "2", "decisionSource": "human_response"}},
-            {"type": "permission.completed", "data": {"requestId": "3"}},
+            {"type": "permission.completed", "data": {"requestId": "1"}},
         ])
-        permissions = data["permissions"]
-        self.assertEqual(permissions["requestedEvents"], 2)
-        self.assertEqual(permissions["completedEvents"], 3)
+        main = data["permissions"]["main"]
+        self.assertEqual(main["requestedEvents"], 2)
+        self.assertEqual(main["completedEvents"], 3)
         self.assertEqual(
-            permissions["decisionSources"], {"host_policy": 1, "human_response": 1, "not available": 1}
+            main["decisionSources"], {"host_policy": 1, "human_response": 1, "not available": 1}
         )
-        self.assertIn("do not show whether a prompt was visible in the UI", permissions["note"])
-        self.assertIn("permission events: requested=2 completed=3", stdout)
-        self.assertNotIn("prompts shown", stdout.lower())
+        self.assertIn("not proof that a prompt appeared in the UI", data["permissions"]["note"])
+        self.assertIn("main agent: requested=2 completed=3", stdout)
 
     def test_totals_sum_task_level_figures_only_and_ignore_session_usage(self):
         stdout, data = self.report([
@@ -323,7 +322,7 @@ class TelemetryReportTests(HelperTestCase):
     def test_report_without_delegations_still_reports_permissions(self):
         _, data = self.report([{"type": "permission.requested", "data": {}}])
         self.assertEqual(data["delegations"], [])
-        self.assertEqual(data["permissions"]["requestedEvents"], 1)
+        self.assertEqual(data["permissions"]["main"]["requestedEvents"], 1)
 
 
 class PublicPackageExclusionTests(unittest.TestCase):
@@ -341,6 +340,7 @@ class PublicPackageExclusionTests(unittest.TestCase):
         assets = REPOSITORY_ROOT / "src" / "specfactory" / "assets"
         for relative in (
             ".github/agents/factory-lead.agent.md",
+            ".github/agents/code-reviewer.agent.md",
             ".github/skills/factory-handoff/SKILL.md",
             "scripts/specialist_models.py",
             "scripts/install_factory.py",

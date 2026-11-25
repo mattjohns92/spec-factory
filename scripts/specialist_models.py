@@ -28,9 +28,11 @@ INHERITED = "none (inherited)"
 NO_OVERRIDE_RECORDED = "not available (task_argument, no explicitModelOverride recorded)"
 TOKENS_LABEL = "runtime-reported total; composition and cost unknown"
 PERMISSIONS_NOTE = (
-    "counts of permission events recorded in the log (whole session, not per delegation); "
-    "they do not show whether a prompt was visible in the UI. A 'human_response' decision source "
-    "records a human reply; 'host_policy' records an automatic decision."
+    "permission events are log records, not proof that a prompt appeared in the UI; a 'human_response' "
+    "decision source records a human reply and 'host_policy' an automatic decision. permissionMode and "
+    "agentMode are values the runtime reported on requests, and allow-all changes are runtime-reported "
+    "session settings. Events are attributed by their agentId; none of this shows that sandbox or tool "
+    "restrictions were enforced, and conversational owner approval is separate from all of it."
 )
 LABEL_WARNING = (
     "warning: '{value}' looks like a display label. The task runtime expects its own model identifier, "
@@ -274,20 +276,55 @@ def _newest_events_file():
     return max(candidates, key=lambda item: item[0])[1]
 
 
+def _permission_summary():
+    return {
+        "requestedEvents": 0,
+        "completedEvents": 0,
+        "decisionSources": {},
+        "permissionModes": {},
+        "agentModes": {},
+    }
+
+
+def _count(counter, value):
+    key = _text(value)
+    counter[key] = counter.get(key, 0) + 1
+
+
+def _agent_id(event):
+    value = event.get("agentId")
+    return value if isinstance(value, str) and value else None
+
+
 def _read_events(path):
     """Return (started, completed, skipped, context) from an events file.
 
     started/completed are dicts keyed by toolCallId; skipped counts bad lines. context holds the
-    parent session model in effect when each delegation started and the permission-event counts.
+    parent session model in effect when each delegation started, permission events grouped by the
+    agent that produced them (main session, each agentId, or unattributed), and which toolCallId
+    each agentId was started for.
     """
     started = {}
     completed = {}
     skipped = 0
     parent_model = None
+    unattributed = object()
+    request_sources = {}
     context = {
         "parentModels": {},
-        "permissions": {"requested": 0, "completed": 0, "decisionSources": {}},
+        "agentCalls": {},
+        "permissionSettingChanges": [],
+        "permissions": {"main": _permission_summary(), "agents": {}, "unattributed": _permission_summary()},
     }
+
+    def bucket(source):
+        permissions = context["permissions"]
+        if source is unattributed:
+            return permissions["unattributed"]
+        if source is None:
+            return permissions["main"]
+        return permissions["agents"].setdefault(source, _permission_summary())
+
     with path.open("rb") as stream:
         for raw in stream:
             if not raw.strip():
@@ -315,12 +352,31 @@ def _read_events(path):
                 if "agentId" not in event and isinstance(new_model, str) and new_model:
                     parent_model = new_model
             elif kind == "permission.requested":
-                context["permissions"]["requested"] += 1
+                source = _agent_id(event)
+                request_id = data.get("requestId")
+                if isinstance(request_id, str) and request_id:
+                    request_sources[request_id] = source
+                summary = bucket(source)
+                summary["requestedEvents"] += 1
+                _count(summary["permissionModes"], data.get("permissionMode"))
+                _count(summary["agentModes"], data.get("agentMode"))
             elif kind == "permission.completed":
-                context["permissions"]["completed"] += 1
-                source = _text(data.get("decisionSource"))
-                sources = context["permissions"]["decisionSources"]
-                sources[source] = sources.get(source, 0) + 1
+                request_id = data.get("requestId")
+                if request_id in request_sources:
+                    source = request_sources[request_id]
+                elif _agent_id(event) is not None:
+                    source = _agent_id(event)
+                else:
+                    source = unattributed
+                summary = bucket(source)
+                summary["completedEvents"] += 1
+                _count(summary["decisionSources"], data.get("decisionSource"))
+            elif kind == "session.permissions_changed":
+                context["permissionSettingChanges"].append({
+                    "source": _agent_id(event) or "main",
+                    "allowAllPermissionMode": _text(data.get("allowAllPermissionMode")),
+                    "previousAllowAllPermissionMode": _text(data.get("previousAllowAllPermissionMode")),
+                })
             elif kind in ("subagent.started", "subagent.completed"):
                 call_id = data.get("toolCallId")
                 if not isinstance(call_id, str) or not call_id:
@@ -330,6 +386,8 @@ def _read_events(path):
                 if kind == "subagent.started":
                     started[call_id] = data
                     context["parentModels"][call_id] = parent_model
+                    if _agent_id(event) is not None:
+                        context["agentCalls"][_agent_id(event)] = call_id
                 else:
                     completed[call_id] = data
     return started, completed, skipped, context
@@ -437,15 +495,26 @@ def build_report(path):
             if item[field] != NOT_AVAILABLE:
                 entry[key] += item[field]
     permissions = context["permissions"]
+    by_call = {}
+    unlinked = {}
+    for agent_id, summary in permissions["agents"].items():
+        call_id = context["agentCalls"].get(agent_id)
+        if call_id is None:
+            unlinked[agent_id] = summary
+        else:
+            by_call[call_id] = summary
+    for item in delegations:
+        item["permissions"] = by_call.get(item["toolCallId"]) or _permission_summary()
     return {
         "events": str(path),
         "skippedLines": skipped,
         "delegations": delegations,
         "totals": totals,
         "permissions": {
-            "requestedEvents": permissions["requested"],
-            "completedEvents": permissions["completed"],
-            "decisionSources": permissions["decisionSources"],
+            "main": permissions["main"],
+            "unlinkedAgents": unlinked,
+            "unattributed": permissions["unattributed"],
+            "settingChanges": context["permissionSettingChanges"],
             "note": PERMISSIONS_NOTE,
         },
     }
@@ -487,6 +556,7 @@ def cmd_report(arguments):
         print(f"   totalTokens: {item['totalTokens']} ({TOKENS_LABEL})")
         print(f"   totalToolCalls: {item['totalToolCalls']}")
         print(f"   durationMs: {item['durationMs']}")
+        print(f"   permission events (this delegation only): {_permission_line(item['permissions'])}")
     print("per-agent totals (sums of task-level figures; session-wide usage is not attributed):")
     if not report["totals"]:
         print("  (none)")
@@ -496,12 +566,28 @@ def cmd_report(arguments):
             f"tokens={entry['tokens']} toolCalls={entry['toolCalls']} durationMs={entry['durationMs']}"
         )
     permissions = report["permissions"]
-    print(
-        f"permission events: requested={permissions['requestedEvents']} "
-        f"completed={permissions['completedEvents']} decisionSources={permissions['decisionSources']}"
-    )
+    print("permission events by source (not combined):")
+    print(f"  main agent: {_permission_line(permissions['main'])}")
+    for agent_id, summary in permissions["unlinkedAgents"].items():
+        print(f"  delegated agent {agent_id} (no matching subagent.started): {_permission_line(summary)}")
+    unattributed = permissions["unattributed"]
+    if unattributed["completedEvents"] or unattributed["requestedEvents"]:
+        print(f"  unattributed: {_permission_line(unattributed)}")
+    for change in permissions["settingChanges"]:
+        print(
+            f"  runtime-reported allow-all setting change ({change['source']}): "
+            f"{change['previousAllowAllPermissionMode']} -> {change['allowAllPermissionMode']}"
+        )
     print(f"  note: {permissions['note']}")
     return 0
+
+
+def _permission_line(summary):
+    return (
+        f"requested={summary['requestedEvents']} completed={summary['completedEvents']} "
+        f"decisionSources={summary['decisionSources']} permissionMode={summary['permissionModes']} "
+        f"agentMode={summary['agentModes']}"
+    )
 
 
 def _build_parser():

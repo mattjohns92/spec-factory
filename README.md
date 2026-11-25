@@ -14,10 +14,10 @@ The installer does not initialize or repair Spec Kit. If the project is not read
 
 ### Install
 
-Open a terminal at the root of your existing Spec Kit project, then run the published `v0.1.2` wheel directly from GitHub Releases:
+Open a terminal at the root of your existing Spec Kit project, then run the published `v0.1.3` wheel directly from GitHub Releases:
 
 ```powershell
-uvx --from "https://github.com/mattjohns92/spec-factory/releases/download/v0.1.2/specfactory-0.1.2-py3-none-any.whl" specfactory init
+uvx --from "https://github.com/mattjohns92/spec-factory/releases/download/v0.1.3/specfactory-0.1.3-py3-none-any.whl" specfactory init
 ```
 
 The installer checks prerequisites and previews its plan. It asks separately before installing the Specify CLI (if needed) and before writing the Spec Factory files. It creates managed files only when they are absent, never overwrites existing files, writes an install manifest, and adds a local Git exclude entry for optional model preferences. Declining an action leaves that action unapplied.
@@ -25,18 +25,18 @@ The installer checks prerequisites and previews its plan. It asks separately bef
 To preview without setup commands, prompts, or project writes:
 
 ```powershell
-uvx --from "https://github.com/mattjohns92/spec-factory/releases/download/v0.1.2/specfactory-0.1.2-py3-none-any.whl" specfactory init --dry-run
+uvx --from "https://github.com/mattjohns92/spec-factory/releases/download/v0.1.3/specfactory-0.1.3-py3-none-any.whl" specfactory init --dry-run
 ```
 
 This command downloads the published wheel from GitHub Releases; it does not use PyPI.
 
 ### Multi-Repository VS Code Workspaces
 
-Workspace installation is supported by the `v0.1.2` wheel. From the directory that contains your workspace, preview first, then install:
+Workspace installation is supported by the `v0.1.3` wheel. From the directory that contains your workspace, preview first, then install:
 
 ```powershell
-uvx --from "https://github.com/mattjohns92/spec-factory/releases/download/v0.1.2/specfactory-0.1.2-py3-none-any.whl" specfactory init --workspace --target "C:\work\my-workspace" --dry-run
-uvx --from "https://github.com/mattjohns92/spec-factory/releases/download/v0.1.2/specfactory-0.1.2-py3-none-any.whl" specfactory init --workspace --target "C:\work\my-workspace"
+uvx --from "https://github.com/mattjohns92/spec-factory/releases/download/v0.1.3/specfactory-0.1.3-py3-none-any.whl" specfactory init --workspace --target "C:\work\my-workspace" --dry-run
+uvx --from "https://github.com/mattjohns92/spec-factory/releases/download/v0.1.3/specfactory-0.1.3-py3-none-any.whl" specfactory init --workspace --target "C:\work\my-workspace"
 ```
 
 The target must be a Gitless workspace root outside any Git working tree and contain at least two independent child Git repositories. Spec Factory reads each child repository's path, branch, HEAD, and working-tree state, then installs one shared set of agents and scripts at the workspace root. It does not write files or Git metadata in child repositories, initialize Git at the root, change Git excludes, or prompt for model preferences. `.factory/workspace.json` records the child paths found during installation; readiness reports live child state and notes later inventory changes.
@@ -53,6 +53,16 @@ After installation, open the project folder in VS Code, open Copilot Chat, open 
 
 The installer does not sign in to Copilot or select model IDs for you. Readiness checks do not verify Copilot authentication, live task dispatch, or sandbox enforcement.
 
+### Workflow Gates
+
+Factory Lead's instructions, the Code Reviewer profile and the `factory-handoff` skill ask for these checks. They are instructions to the agents, not runtime enforcement: a session can still ignore them, so confirm in the transcript that they were followed.
+
+- Before implementation, Git HEAD and working-tree state are recorded for each affected repository (each child repository in a workspace). Existing changes are preserved, overlaps are escalated, and broad staging (`git add .`, `git add -A`, `git commit -a`) is not used.
+- Substantial work is split into independently verifiable tasks. A task is marked complete only after the specialist has finished, its changed files were inspected within scope, and required verification succeeded.
+- A review must name the requirements, plan, source, diff and test evidence it inspected, or it cannot be a PASS. Later edits to reviewed files, by Engineer or Factory Lead, require a focused re-review or a recorded owner-approved exception. A review is called independent only with runtime evidence; otherwise it is a self-review.
+- A feature is not reported fully verified or production-ready without a completed QA assessment or a recorded owner-approved exception.
+- Owner approval in conversation, the runtime's reported permission mode, recorded permission decisions and independently demonstrated enforcement are kept separate.
+
 ### Optional Model Configuration
 
 Specialist models are optional until a specialist is first needed. If none is configured, Factory Lead explains this and offers a setup step; it writes the local `.factory/model-preferences.json` (excluded from Git in single-repository installs) only after you approve. Use the model identifier your Copilot task runtime accepts (for example the `model` value reported by an earlier delegation), not a Copilot display label. Spec Factory does not bundle or validate model IDs against the live runtime.
@@ -65,7 +75,7 @@ python scripts/specialist_models.py set-override <role> <model-id>
 python scripts/specialist_models.py resolve <role>
 ```
 
-Roles are `architect`, `engineer`, `qa-engineer`, and `code-reviewer`. Overrides take precedence over the shared model. `python scripts/specialist_models.py report` summarizes models, runtime-reported tokens (not necessarily billable usage), tool calls, and permission events from the latest Copilot session log.
+Roles are `architect`, `engineer`, `qa-engineer`, and `code-reviewer`. Overrides take precedence over the shared model. `python scripts/specialist_models.py report` summarizes models, runtime-reported tokens (not necessarily billable usage), tool calls, and permission events from the latest Copilot session log. Permission events are listed separately for the main agent and each specialist, with the runtime-reported `permissionMode` and `agentMode` and the decision sources; missing values show as "not available". A recorded approval does not mean a prompt appeared in the UI, and none of this demonstrates sandbox enforcement.
 
 ## Development
 

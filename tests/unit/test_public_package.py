@@ -204,8 +204,8 @@ class DistributionMetadataTests(unittest.TestCase):
         readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
         self.assertIn("uvx --from", readme)
         self.assertIn(
-            "github.com/mattjohns92/spec-factory/releases/download/v0.1.2/"
-            "specfactory-0.1.2-py3-none-any.whl",
+            "github.com/mattjohns92/spec-factory/releases/download/v0.1.3/"
+            "specfactory-0.1.3-py3-none-any.whl",
             readme,
         )
         self.assertIn("specfactory init --dry-run", readme)
