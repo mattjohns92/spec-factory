@@ -7,6 +7,7 @@ command. This module only inspects, previews, asks, sequences and reports.
 import argparse
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 
@@ -474,6 +475,27 @@ def _build_parser():
         "--yes", action="store_true",
         help="with --non-interactive: authorize only the Software Factory install when prerequisites pass",
     )
+    upgrade = commands.add_parser(
+        "upgrade",
+        help="upgrade an existing installation (single repository or workspace) to this release",
+        description=(
+            "Compare the installed Software Factory files with this release, show the plan, then "
+            "upgrade only the files Spec Factory manages after approval. A backup is kept and the "
+            "previous files are restored if the upgrade fails."
+        ),
+    )
+    upgrade.add_argument("--target", help="installation root (default: current directory)")
+    upgrade.add_argument("--dry-run", action="store_true", help="read-only preview; no prompts or writes")
+    upgrade.add_argument(
+        "--non-interactive", action="store_true",
+        help="never prompt; preview only unless --yes is also given",
+    )
+    upgrade.add_argument("--yes", action="store_true", help="with --non-interactive: authorize the upgrade")
+    upgrade.add_argument(
+        "--replace", action="append", default=[], metavar="PATH",
+        help="approve replacing this locally modified managed file (a backup is kept); repeatable",
+    )
+    upgrade.add_argument("--recover", action="store_true", help="restore the backup of an interrupted upgrade")
     return parser
 
 
@@ -514,6 +536,16 @@ def main(
     if problem:
         emit(problem)
         return EXIT_REFUSED
+
+    if arguments.command == "upgrade":
+        if interactive is None:
+            stream = stdin or sys.stdin
+            interactive = bool(getattr(stream, "isatty", lambda: False)())
+        return _upgrade(
+            arguments, target, stdout=stdout, environment=environment,
+            script=script_runner or _default_script, input_fn=input_fn or input,
+            interactive=interactive and not arguments.non_interactive,
+        )
 
     readiness = bundle.load_script("check_factory_readiness")
     which = which or readiness.make_path_lookup(environment, absolute_only=True)
@@ -609,3 +641,95 @@ def _root_problem(onboarding, target, *, workspace=False):
     if not same:
         return f"{target} is not the Git project root (the root is {top}); use --target with the root."
     return None
+
+
+def _upgrade(arguments, target, *, stdout, environment, script, input_fn, interactive):
+    """`specfactory upgrade`: preview with the engine's dry run, ask, then apply; consent lives here."""
+
+    def emit(text=""):
+        print(text, file=stdout)
+
+    def approve(question):
+        try:
+            return str(input_fn(f"{question} [y/N]: ")).strip().lower() in ("y", "yes")
+        except (EOFError, KeyboardInterrupt):
+            return False
+
+    engine = bundle.asset_root() / "scripts" / "upgrade_factory.py"
+    env = {
+        key: value
+        for key, value in environment.items()
+        if not key.upper().startswith("FACTORY_") and key.upper() != "PYTHONPATH"
+    }
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    replace = list(arguments.replace)
+
+    def run(dry_run, recover=False):
+        command = [sys.executable, "-B", str(engine), "--target", target]
+        if dry_run:
+            command.append("--dry-run")
+        if recover:
+            command.append("--recover")
+        for path in replace:
+            command += ["--replace", path]
+        result = script(command, target, env)
+        if result.stdout:
+            emit(result.stdout.rstrip("\n"))
+        if result.stderr:
+            print(result.stderr.rstrip("\n"), file=sys.stderr)
+        return result
+
+    # Prompts happen only on a real terminal; --yes (with --non-interactive) is the only other way to apply.
+    preview_only = arguments.dry_run or not (interactive or (arguments.non_interactive and arguments.yes))
+    if arguments.recover:
+        run(True, recover=True)
+        if preview_only:
+            emit("Preview only: nothing was changed.")
+            return EXIT_OK
+        if not (arguments.yes or approve("Restore the files from the interrupted upgrade's backup now?")):
+            emit("Declined. Nothing was changed.")
+            return EXIT_REFUSED
+        return run(False, recover=True).returncode
+
+    plan = run(True)
+    if plan.returncode == EXIT_REFUSED:
+        return EXIT_REFUSED
+    if "already up to date" in (plan.stdout or ""):
+        return EXIT_OK
+    if plan.returncode == EXIT_INCOMPLETE and interactive and not preview_only:
+        for path in re.findall(r"^\[modified\]\s+([^\s:]+)", plan.stdout or "", re.MULTILINE):
+            if approve(f"Replace the locally modified {path}? A backup of your version is kept"):
+                replace.append(path)
+        if replace != list(arguments.replace):
+            emit("Updated plan with your approvals:")
+            plan = run(True)
+    if arguments.dry_run:
+        if "DRY RUN: nothing was changed" not in (plan.stdout or ""):
+            emit("DRY RUN: nothing was changed.")
+        return plan.returncode
+    if plan.returncode != EXIT_OK:
+        emit("Nothing was changed.")
+        return plan.returncode
+    if preview_only:
+        if arguments.non_interactive:
+            emit("Preview only: nothing was changed. To apply, re-run with --non-interactive --yes.")
+        else:
+            emit("Preview only: input is not a terminal, so nothing was asked or changed. "
+                 "Run interactively to approve the upgrade, or use --non-interactive --yes.")
+        return EXIT_OK
+    if not arguments.non_interactive and not approve(
+        "Apply this upgrade now? Only the files above change; a backup is kept and restored on failure"
+    ):
+        emit("Declined. Nothing was changed.")
+        return EXIT_REFUSED
+    result = run(False)
+    emit("Result:")
+    if result.returncode == EXIT_OK:
+        emit("  The upgrade is complete and the installed readiness check passed.")
+    elif result.returncode == EXIT_NOT_READY:
+        emit("  The files were upgraded and kept, but readiness did not pass for reasons unrelated to them or could not run (see above).")
+    elif result.returncode == EXIT_INCOMPLETE:
+        emit("  The upgrade did not complete or failed verification; previous files were restored where changes had begun (see above).")
+    else:
+        emit("  The upgrade was refused; nothing was written.")
+    return result.returncode

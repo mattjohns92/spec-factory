@@ -14,10 +14,10 @@ The installer does not initialize or repair Spec Kit. If the project is not read
 
 ### Install
 
-Open a terminal at the root of your existing Spec Kit project, then run the published `v0.1.3` wheel directly from GitHub Releases:
+Open a terminal at the root of your existing Spec Kit project, then run the published `v0.1.4` wheel directly from GitHub Releases:
 
 ```powershell
-uvx --from "https://github.com/mattjohns92/spec-factory/releases/download/v0.1.3/specfactory-0.1.3-py3-none-any.whl" specfactory init
+uvx --from "https://github.com/mattjohns92/spec-factory/releases/download/v0.1.4/specfactory-0.1.4-py3-none-any.whl" specfactory init
 ```
 
 The installer checks prerequisites and previews its plan. It asks separately before installing the Specify CLI (if needed) and before writing the Spec Factory files. It creates managed files only when they are absent, never overwrites existing files, writes an install manifest, and adds a local Git exclude entry for optional model preferences. Declining an action leaves that action unapplied.
@@ -25,18 +25,18 @@ The installer checks prerequisites and previews its plan. It asks separately bef
 To preview without setup commands, prompts, or project writes:
 
 ```powershell
-uvx --from "https://github.com/mattjohns92/spec-factory/releases/download/v0.1.3/specfactory-0.1.3-py3-none-any.whl" specfactory init --dry-run
+uvx --from "https://github.com/mattjohns92/spec-factory/releases/download/v0.1.4/specfactory-0.1.4-py3-none-any.whl" specfactory init --dry-run
 ```
 
 This command downloads the published wheel from GitHub Releases; it does not use PyPI.
 
 ### Multi-Repository VS Code Workspaces
 
-Workspace installation is supported by the `v0.1.3` wheel. From the directory that contains your workspace, preview first, then install:
+Workspace installation is supported by the `v0.1.4` wheel. From the directory that contains your workspace, preview first, then install:
 
 ```powershell
-uvx --from "https://github.com/mattjohns92/spec-factory/releases/download/v0.1.3/specfactory-0.1.3-py3-none-any.whl" specfactory init --workspace --target "C:\work\my-workspace" --dry-run
-uvx --from "https://github.com/mattjohns92/spec-factory/releases/download/v0.1.3/specfactory-0.1.3-py3-none-any.whl" specfactory init --workspace --target "C:\work\my-workspace"
+uvx --from "https://github.com/mattjohns92/spec-factory/releases/download/v0.1.4/specfactory-0.1.4-py3-none-any.whl" specfactory init --workspace --target "C:\work\my-workspace" --dry-run
+uvx --from "https://github.com/mattjohns92/spec-factory/releases/download/v0.1.4/specfactory-0.1.4-py3-none-any.whl" specfactory init --workspace --target "C:\work\my-workspace"
 ```
 
 The target must be a Gitless workspace root outside any Git working tree and contain at least two independent child Git repositories. Spec Factory reads each child repository's path, branch, HEAD, and working-tree state, then installs one shared set of agents and scripts at the workspace root. It does not write files or Git metadata in child repositories, initialize Git at the root, change Git excludes, or prompt for model preferences. `.factory/workspace.json` records the child paths found during installation; readiness reports live child state and notes later inventory changes.
@@ -47,6 +47,28 @@ Open the workspace root in VS Code so its `.github/agents` files are in the open
 
 VS Code's usual single-folder workspace is the simplest layout: open the physical parent directory directly. A saved multi-root `.code-workspace` is different. The installer still targets the physical parent directory, not the `.code-workspace` file; include that parent as a workspace folder or the parent's `.github/agents` directory is outside the open workspace. Opening only the individual service directories does not expose the shared parent agents. Some extensions and tools remain scoped to the first or active workspace folder, so a multi-root workspace does not guarantee that a Copilot session can navigate every service. Verify the picker and cross-service context in the actual session; file placement alone is not evidence of delegation.
 
+### Upgrading an Existing Installation
+
+To move an installation to v0.1.4, run `upgrade` from the new wheel, at the project root or against the workspace root (`--target <path>`). It reads the installed version and recorded file hashes from `.github/software-factory/install-manifest.json`, so it works for single repositories and Gitless workspaces alike. It was tested upgrading from v0.1.1 and v0.1.3 installations.
+
+```powershell
+uvx --from "https://github.com/mattjohns92/spec-factory/releases/download/v0.1.4/specfactory-0.1.4-py3-none-any.whl" specfactory upgrade --dry-run
+uvx --from "https://github.com/mattjohns92/spec-factory/releases/download/v0.1.4/specfactory-0.1.4-py3-none-any.whl" specfactory upgrade
+```
+
+The preview lists each managed file as replace, add, unchanged, locally modified or conflict. Nothing is written without your approval (`--non-interactive --yes` approves without prompting).
+
+- Only the Spec Factory managed files and the install manifest change. `.factory/model-preferences.json` (including model overrides), `.factory/workspace.json`, Spec Kit files, application files and child repositories are never modified.
+- A managed file you edited locally blocks the whole upgrade. Approve replacing it with `--replace <path>` (repeatable; interactive runs ask per file). Your version is kept in the backup.
+- Before any change a backup of the files to be replaced is written. If writing or the final byte-for-byte check fails, the previous files and manifest are restored. The manifest is updated last.
+- The installed readiness check then runs. If it reports a failure in the manifest-integrity or specialist-profile checks, the upgrade is rolled back and the backup is kept. A verdict of "ready with limitations" is a pass: unverified Copilot authentication, sandbox enforcement or live delegation never trigger a rollback. Other readiness failures (for example a missing Specify CLI) are reported and the upgrade is kept, exit status 3.
+
+Limitations:
+
+- **Interrupted operations:** if a run is killed mid-way (power loss, closed terminal), files may be partly upgraded. The next `specfactory upgrade` refuses to continue until you run `specfactory upgrade --recover`, which restores the previous files from the backup. Rollback is tested with injected failures, not with real power loss.
+- **Persistent backups:** every upgrade leaves its backup in place (inside the project's `.git` directory, or under `.factory/upgrade-backups` in a workspace). Nothing is pruned automatically; delete old backups yourself once satisfied.
+- **Retired files:** a file that a newer release stops managing is left as it is and is not removed.
+- It does not initialize Spec Kit, change Git metadata, or downgrade an installation.
 ### Choose Factory Lead
 
 After installation, open the project folder in VS Code, open Copilot Chat, open the agent picker, and select **Factory Lead**. Factory Lead coordinates work with the installed specialist agents and pauses for your approval of specification and plan steps.

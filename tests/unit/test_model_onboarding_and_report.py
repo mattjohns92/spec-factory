@@ -344,6 +344,7 @@ class PublicPackageExclusionTests(unittest.TestCase):
             ".github/skills/factory-handoff/SKILL.md",
             "scripts/specialist_models.py",
             "scripts/install_factory.py",
+            "scripts/upgrade_factory.py",
         ):
             self.assertEqual(
                 (assets / relative).read_bytes(), (REPOSITORY_ROOT / relative).read_bytes(), relative

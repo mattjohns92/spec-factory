@@ -246,7 +246,7 @@ class ParsingAndTargetTests(PublicCliCase):
         parser = cli._build_parser()
         self.assertEqual(parser.prog, "specfactory")
         self.assertNotIn("factory", parser._subparsers._group_actions[0].choices)
-        self.assertEqual(list(parser._subparsers._group_actions[0].choices), ["init"])
+        self.assertEqual(list(parser._subparsers._group_actions[0].choices), ["init", "upgrade"])
 
 
 class WorkspaceCliTests(PublicCliCase):

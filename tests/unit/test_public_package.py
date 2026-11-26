@@ -68,6 +68,7 @@ class BundledAssetTests(unittest.TestCase):
                 "scripts/check_factory_readiness.py",
                 "scripts/install_factory.py",
                 "scripts/specialist_models.py",
+                "scripts/upgrade_factory.py",
                 "scripts/validate_specialist_profiles.py",
             ],
         )
@@ -204,8 +205,8 @@ class DistributionMetadataTests(unittest.TestCase):
         readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
         self.assertIn("uvx --from", readme)
         self.assertIn(
-            "github.com/mattjohns92/spec-factory/releases/download/v0.1.3/"
-            "specfactory-0.1.3-py3-none-any.whl",
+            "github.com/mattjohns92/spec-factory/releases/download/v0.1.4/"
+            "specfactory-0.1.4-py3-none-any.whl",
             readme,
         )
         self.assertIn("specfactory init --dry-run", readme)

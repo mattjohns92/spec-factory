@@ -49,6 +49,7 @@ ASSET_FILES = (
     "scripts/check_factory_readiness.py",
     "scripts/install_factory.py",
     "scripts/specialist_models.py",
+    "scripts/upgrade_factory.py",
     "scripts/validate_specialist_profiles.py",
 )
 DIST_INFO = f"specfactory-{VERSION}.dist-info"

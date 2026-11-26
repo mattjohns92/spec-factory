@@ -15,6 +15,7 @@ BUNDLED_ASSETS = (
     ".github/agents/code-reviewer.agent.md",
     ".github/skills/factory-handoff/SKILL.md",
     "scripts/install_factory.py",
+    "scripts/upgrade_factory.py",
     "scripts/check_factory_readiness.py",
     "scripts/validate_specialist_profiles.py",
     "scripts/specialist_models.py",
